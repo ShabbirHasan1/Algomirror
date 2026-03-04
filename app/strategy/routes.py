@@ -374,15 +374,23 @@ def execute_strategy(strategy_id):
                 'message': 'No accounts selected for strategy'
             }), 400
 
-        # Guard against duplicate execution - check for pending executions
-        pending_count = StrategyExecution.query.filter_by(
-            strategy_id=strategy_id,
-            status='pending'
+        # Guard against duplicate execution - only check for pending executions
+        # on the SPECIFIC unexecuted legs that are about to be executed.
+        # Previously this checked ALL pending orders for the strategy, which
+        # blocked new/failed legs from executing when older limit orders were
+        # still unfilled (pending).  The is_executed flag already prevents
+        # re-execution of completed legs, so we only need to guard against
+        # duplicate orders for the same unexecuted legs.
+        unexecuted_leg_ids = [leg.id for leg in unexecuted_legs]
+        pending_count = StrategyExecution.query.filter(
+            StrategyExecution.strategy_id == strategy_id,
+            StrategyExecution.status == 'pending',
+            StrategyExecution.leg_id.in_(unexecuted_leg_ids)
         ).count()
         if pending_count > 0:
             return jsonify({
                 'status': 'warning',
-                'message': f'Strategy already has {pending_count} pending order(s). Wait for them to complete before executing again.'
+                'message': f'{pending_count} of these leg(s) already have pending orders. Wait for them to complete before executing again.'
             }), 400
 
         logger.debug(f"Executing strategy {strategy_id} ({strategy.name}): {len(unexecuted_legs)} unexecuted legs out of {leg_count} total")
