@@ -279,9 +279,10 @@ class StrategyExecutor:
             print(f"[MAIN SESSION] Leg {leg.leg_number} (id={leg.id}): {len(leg_results)} results, {len(successful)} successful")
             logger.debug(f"[MAIN SESSION] Leg {leg.leg_number} (id={leg.id}): {len(leg_results)} results, {len(successful)} successful")
 
-            # Mark as executed if we have any results (successful or not) - order was attempted
-            # This prevents leg from being deleted on next save
-            if leg_results:
+            # Only mark as executed if at least one order was SUCCESSFULLY placed.
+            # Previously this used `if leg_results:` which included errors/failures,
+            # causing legs to show "EXECUTED" even when no order reached OpenAlgo.
+            if successful:
                 try:
                     # Refresh leg object from database to ensure we're in the right session
                     fresh_leg = StrategyLeg.query.get(leg.id)
@@ -303,6 +304,11 @@ class StrategyExecutor:
                     print(f"[MAIN SESSION] ERROR: Failed to mark leg {leg.leg_number} as executed: {e}")
                     logger.error(f"[MAIN SESSION] Failed to mark leg {leg.leg_number} as executed: {e}")
                     db.session.rollback()
+            elif leg_results:
+                # Leg had results but none were successful - order failed
+                failed = [r for r in leg_results if r.get('status') in ['failed', 'error']]
+                print(f"[MAIN SESSION] Leg {leg.leg_number} FAILED: {len(failed)} failed result(s) - keeping as unexecuted for retry")
+                logger.warning(f"[MAIN SESSION] Leg {leg.leg_number} had {len(failed)} failed results, not marking as executed")
             else:
                 print(f"[MAIN SESSION] Leg {leg.leg_number} had no results at all - order not attempted?")
                 logger.warning(f"[MAIN SESSION] Leg {leg.leg_number} had no results - order may not have been attempted")
@@ -702,16 +708,21 @@ class StrategyExecutor:
                 db.session.add(failed_execution)
                 records_to_commit.append(failed_execution)
 
-        # Mark leg as executed if we have any successful orders
-        if successful_orders:
-            leg.is_executed = True
+        # NOTE: leg.is_executed is NOT set here because `leg` is a detached ORM
+        # object from the parent session.  Setting it in this child-thread session
+        # won't persist.  The execute() post-processing handles is_executed marking
+        # in the correct session based on successful results.
 
-        # Single commit for ALL execution records + leg status
-        if records_to_commit or successful_orders:
+        # Single commit for ALL execution records.
+        # Use self.lock to serialize commits across parallel leg threads,
+        # preventing SQLite "database is locked" errors when multiple BUY/SELL
+        # legs execute concurrently.
+        if records_to_commit:
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    db.session.commit()
+                    with self.lock:
+                        db.session.commit()
                     print(f"[BATCH COMMIT] Leg {leg.leg_number}: committed {len(records_to_commit)} execution records", flush=True)
                     logger.debug(f"[BATCH COMMIT] Leg {leg.leg_number}: {len(records_to_commit)} records committed")
                     break
@@ -724,8 +735,6 @@ class StrategyExecutor:
                         # Re-add all records after rollback
                         for record in records_to_commit:
                             db.session.add(record)
-                        if successful_orders:
-                            leg.is_executed = True
                     else:
                         logger.error(f"[BATCH FAILED] Leg {leg.leg_number}: commit failed after {max_retries} retries: {commit_error}")
                         print(f"[BATCH FAILED] Leg {leg.leg_number}: commit failed after {max_retries} retries: {commit_error}", flush=True)
