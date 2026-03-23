@@ -42,14 +42,15 @@ class Config:
             'pool_recycle': 3600,
         }
     else:
-        # PostgreSQL or other databases - tuned for single-user app with
-        # background services (SSE streams, order poller, parallel strategy
-        # execution threads) that all need concurrent DB connections
+        # PostgreSQL - sized for parallel multi-leg execution across 10 accounts.
+        # Peak connection usage: executor (2 leg threads + 10 account threads + 1 async)
+        # + poller (up to 10) + SSE (2) + request handlers (4) + background (2) = ~31
+        # pool_size=15 + max_overflow=25 = 40 max, providing headroom.
         SQLALCHEMY_ENGINE_OPTIONS = {
             'pool_pre_ping': True,
             'pool_recycle': 3600,
-            'pool_size': 10,
-            'max_overflow': 20,
+            'pool_size': 15,
+            'max_overflow': 25,
             'pool_timeout': 30,
         }
 
