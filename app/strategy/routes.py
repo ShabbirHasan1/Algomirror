@@ -1191,7 +1191,10 @@ def strategy_orderbook(strategy_id):
     # Get all executions for this strategy (INCLUDE rejected/failed for visibility)
     executions = StrategyExecution.query.filter_by(
         strategy_id=strategy_id
-    ).join(TradingAccount).join(StrategyLeg).all()
+    ).join(TradingAccount).join(StrategyLeg).order_by(
+        StrategyLeg.leg_number,
+        TradingAccount.account_name
+    ).all()
 
     orders = []
     for execution in executions:
@@ -1294,7 +1297,10 @@ def strategy_tradebook(strategy_id):
     trades = StrategyExecution.query.filter(
         StrategyExecution.strategy_id == strategy_id,
         StrategyExecution.status.in_(['entered', 'exited'])
-    ).join(TradingAccount).join(StrategyLeg).all()
+    ).join(TradingAccount).join(StrategyLeg).order_by(
+        StrategyLeg.leg_number,
+        TradingAccount.account_name
+    ).all()
 
     # Filter to show only successfully executed trades
     # Exclude: failed/pending status, or rejected/cancelled/open/pending broker status
@@ -1396,7 +1402,10 @@ def strategy_positions(strategy_id):
     positions = StrategyExecution.query.filter(
         StrategyExecution.strategy_id == strategy_id,
         StrategyExecution.status.in_(['entered', 'exit_pending', 'exited'])
-    ).join(TradingAccount).join(StrategyLeg).all()
+    ).join(TradingAccount).join(StrategyLeg).order_by(
+        StrategyLeg.leg_number,
+        TradingAccount.account_name
+    ).all()
 
     logger.debug(f"[POSITIONS] Found {len(positions)} positions for strategy {strategy_id}")
     for pos in positions:
