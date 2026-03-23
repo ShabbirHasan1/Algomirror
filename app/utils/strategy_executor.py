@@ -651,81 +651,80 @@ class StrategyExecutor:
             logger.error(f"[FINAL FAILURE] Order failed on {failed.get('account', 'unknown')}: {failed.get('error', 'unknown error')}")
 
         # BATCH COMMIT: Create all execution records in this thread's session.
-        # Uses self.lock to serialize DB writes across parallel leg threads,
-        # preventing write contention between concurrent commits.
+        # Each parallel leg thread has its own scoped session (keyed by thread ID),
+        # so concurrent commits are safe with PostgreSQL - no lock needed.
         # NOTE: leg.is_executed is NOT set here - this thread's session does not
         # own the leg object (loaded in parent thread). The parent thread's
         # execute() method handles marking legs as executed after all threads join.
         execution_map = {}  # account_name -> StrategyExecution object (for poller)
         records_to_commit = []
 
-        with self.lock:
-            for result in results:
-                # Only process results that have DB data (skip skipped/error without account_id)
-                if 'account_id' not in result:
-                    continue
+        for result in results:
+            # Only process results that have DB data (skip skipped/error without account_id)
+            if 'account_id' not in result:
+                continue
 
-                if result.get('status') in ['pending', 'success']:
-                    execution = StrategyExecution(
-                        strategy_id=self.strategy.id,
-                        account_id=result['account_id'],
-                        leg_id=result['leg_id'],
-                        order_id=result.get('order_id'),
-                        symbol=result['symbol'],
-                        exchange=result['exchange'],
-                        quantity=result['quantity'],
-                        product=result.get('product', 'MIS'),
-                        status='pending',
-                        broker_order_status='open',
-                        entry_time=result.get('entry_time', datetime.utcnow()),
-                        entry_price=leg.limit_price if leg.order_type == 'LIMIT' and leg.limit_price else None
-                    )
-                    db.session.add(execution)
-                    records_to_commit.append(execution)
-                    execution_map[result['account']] = (execution, result)
+            if result.get('status') in ['pending', 'success']:
+                execution = StrategyExecution(
+                    strategy_id=self.strategy.id,
+                    account_id=result['account_id'],
+                    leg_id=result['leg_id'],
+                    order_id=result.get('order_id'),
+                    symbol=result['symbol'],
+                    exchange=result['exchange'],
+                    quantity=result['quantity'],
+                    product=result.get('product', 'MIS'),
+                    status='pending',
+                    broker_order_status='open',
+                    entry_time=result.get('entry_time', datetime.utcnow()),
+                    entry_price=leg.limit_price if leg.order_type == 'LIMIT' and leg.limit_price else None
+                )
+                db.session.add(execution)
+                records_to_commit.append(execution)
+                execution_map[result['account']] = (execution, result)
 
-                elif result.get('status') in ['failed', 'error'] and result.get('account_id'):
-                    failed_execution = StrategyExecution(
-                        strategy_id=self.strategy.id,
-                        account_id=result['account_id'],
-                        leg_id=result.get('leg_id', leg.id),
-                        order_id=None,
-                        symbol=result.get('symbol', ''),
-                        exchange=result.get('exchange', ''),
-                        quantity=result.get('quantity', 0),
-                        product=result.get('product', 'MIS'),
-                        status='failed',
-                        broker_order_status='rejected',
-                        entry_time=result.get('entry_time', datetime.utcnow()),
-                        entry_price=None,
-                        error_message=result.get('error_message', result.get('error', ''))[:500]
-                    )
-                    db.session.add(failed_execution)
-                    records_to_commit.append(failed_execution)
+            elif result.get('status') in ['failed', 'error'] and result.get('account_id'):
+                failed_execution = StrategyExecution(
+                    strategy_id=self.strategy.id,
+                    account_id=result['account_id'],
+                    leg_id=result.get('leg_id', leg.id),
+                    order_id=None,
+                    symbol=result.get('symbol', ''),
+                    exchange=result.get('exchange', ''),
+                    quantity=result.get('quantity', 0),
+                    product=result.get('product', 'MIS'),
+                    status='failed',
+                    broker_order_status='rejected',
+                    entry_time=result.get('entry_time', datetime.utcnow()),
+                    entry_price=None,
+                    error_message=result.get('error_message', result.get('error', ''))[:500]
+                )
+                db.session.add(failed_execution)
+                records_to_commit.append(failed_execution)
 
-            # Single commit for StrategyExecution records only
-            if records_to_commit:
-                max_retries = 5
-                for attempt in range(max_retries):
-                    try:
-                        db.session.commit()
-                        print(f"[BATCH COMMIT] Leg {leg.leg_number}: committed {len(records_to_commit)} execution records", flush=True)
-                        logger.debug(f"[BATCH COMMIT] Leg {leg.leg_number}: {len(records_to_commit)} records committed")
-                        break
-                    except Exception as commit_error:
-                        db.session.rollback()
-                        if attempt < max_retries - 1:
-                            wait_time = 0.5 * (attempt + 1)
-                            print(f"[BATCH RETRY] Leg {leg.leg_number}: commit error, retry {attempt + 1}/{max_retries} in {wait_time:.1f}s - {commit_error}", flush=True)
-                            sleep(wait_time)
-                            # Re-add all records after rollback
-                            for record in records_to_commit:
-                                db.session.add(record)
-                        else:
-                            logger.error(f"[BATCH FAILED] Leg {leg.leg_number}: commit failed after {max_retries} retries: {commit_error}")
-                            print(f"[BATCH FAILED] Leg {leg.leg_number}: commit failed after {max_retries} retries: {commit_error}", flush=True)
+        # Single commit for StrategyExecution records only
+        if records_to_commit:
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    db.session.commit()
+                    print(f"[BATCH COMMIT] Leg {leg.leg_number}: committed {len(records_to_commit)} execution records", flush=True)
+                    logger.debug(f"[BATCH COMMIT] Leg {leg.leg_number}: {len(records_to_commit)} records committed")
+                    break
+                except Exception as commit_error:
+                    db.session.rollback()
+                    if attempt < max_retries - 1:
+                        wait_time = 0.5 * (attempt + 1)
+                        print(f"[BATCH RETRY] Leg {leg.leg_number}: commit error, retry {attempt + 1}/{max_retries} in {wait_time:.1f}s - {commit_error}", flush=True)
+                        sleep(wait_time)
+                        # Re-add all records after rollback
+                        for record in records_to_commit:
+                            db.session.add(record)
+                    else:
+                        logger.error(f"[BATCH FAILED] Leg {leg.leg_number}: commit failed after {max_retries} retries: {commit_error}")
+                        print(f"[BATCH FAILED] Leg {leg.leg_number}: commit failed after {max_retries} retries: {commit_error}", flush=True)
 
-        # Start background poller for each committed execution (outside lock)
+        # Start background poller for each committed execution
         for account_name, (execution, result) in execution_map.items():
             if execution.id is not None:
                 account_obj = result.get('_account_obj')
