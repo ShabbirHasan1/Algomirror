@@ -1567,13 +1567,24 @@ class StrategyExecutor:
                 logger.debug(f"[QTY CALC DEBUG] Using pre-calculated quantity for leg {leg.leg_number}: {pre_calc_qty}")
                 return pre_calc_qty
 
-        # SEQUENTIAL EXECUTION FIX: For BUY legs, match quantity with executed SELL leg
-        # This ensures BUY CE matches SELL CE qty, and BUY PE matches SELL PE qty
-        if account and self.use_margin_calculator and leg.action == 'BUY' and leg.product_type == 'options':
-            executed_sell_qty = self._get_executed_sell_leg_quantity(leg, account)
-            if executed_sell_qty:
-                logger.debug(f"[SEQ EXEC] BUY {leg.option_type} using executed SELL quantity: {executed_sell_qty}")
-                return executed_sell_qty
+        # STRATEGY QUANTITY CONSISTENCY: If any leg in this strategy has already
+        # been executed for this account, ALL subsequent legs must use the same
+        # quantity. This ensures consistent sizing across CE/PE legs even when
+        # legs are added and executed sequentially (e.g., SELL CE first, then
+        # SELL PE later when margin is lower would calculate fewer lots).
+        if account and self.use_margin_calculator:
+            existing_execution = StrategyExecution.query.filter_by(
+                strategy_id=self.strategy.id,
+                account_id=account.id
+            ).filter(
+                StrategyExecution.status.in_(['pending', 'entered']),
+                StrategyExecution.quantity > 0
+            ).first()
+
+            if existing_execution:
+                logger.debug(f"[QTY CONSISTENCY] Leg {leg.leg_number} using existing strategy quantity: "
+                           f"{existing_execution.quantity} (from leg_id={existing_execution.leg_id})")
+                return existing_execution.quantity
 
         # If margin calculator is enabled and account provided, calculate based on margin
         if self.use_margin_calculator and self.margin_calculator and account:
