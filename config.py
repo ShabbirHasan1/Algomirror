@@ -42,15 +42,16 @@ class Config:
             'pool_recycle': 3600,
         }
     else:
-        # PostgreSQL - sized for parallel multi-leg execution across 10 accounts.
-        # Peak connection usage: executor (2 leg threads + 10 account threads + 1 async)
-        # + poller (up to 10) + SSE (2) + request handlers (4) + background (2) = ~31
-        # pool_size=15 + max_overflow=25 = 40 max, providing headroom.
+        # PostgreSQL - sized for up to 4-leg parallel execution across 10 accounts.
+        # Peak: executor (4 leg threads + 20 account threads + 1 async = 25)
+        # + poller (10) + SSE (2) + request handlers (4) + background (2) = ~43
+        # pool_size=20 + max_overflow=30 = 50 max, providing headroom.
+        # Requires PostgreSQL max_connections >= 100.
         SQLALCHEMY_ENGINE_OPTIONS = {
             'pool_pre_ping': True,
             'pool_recycle': 3600,
-            'pool_size': 15,
-            'max_overflow': 25,
+            'pool_size': 20,
+            'max_overflow': 30,
             'pool_timeout': 30,
         }
 
