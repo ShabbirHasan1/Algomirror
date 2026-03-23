@@ -85,5 +85,11 @@ def format_timestamp_to_ist(value, include_date=True, assume_tz="auto"):
 
 
 def format_trade_timestamp(timestamp):
-    """Format trade timestamp as IST, handling mixed UTC/IST naive datetimes."""
-    return format_timestamp_to_ist(timestamp, include_date=False, assume_tz="auto")
+    """Format trade timestamp as IST.
+
+    All entry_time/exit_time values are stored via datetime.utcnow() (naive UTC).
+    Using assume_tz='utc' ensures consistent conversion regardless of when the
+    data is viewed. The previous 'auto' mode used a heuristic that could flip
+    after market hours, showing raw UTC values as IST.
+    """
+    return format_timestamp_to_ist(timestamp, include_date=True, assume_tz="utc")
