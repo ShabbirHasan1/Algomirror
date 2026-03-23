@@ -400,14 +400,27 @@ class MarginCalculator:
                     logger.debug(f"[MARGIN DEBUG] Using cached margin: ₹{tracker.free_margin:,.2f}")
                     return tracker.free_margin
 
-            # Fetch fresh margin data from API
+            # Fetch fresh margin data from API (with retry for transient failures)
             logger.debug(f"[MARGIN DEBUG] Fetching fresh margin data from API: {account.host_url}")
             client = ExtendedOpenAlgoAPI(
                 api_key=account.get_api_key(),
                 host=account.host_url
             )
 
-            response = client.funds()
+            import time as _time
+            response = None
+            for _attempt in range(2):
+                try:
+                    response = client.funds()
+                    if response.get('status') == 'success':
+                        break
+                except Exception:
+                    pass
+                if _attempt == 0:
+                    _time.sleep(0.5)
+
+            if not response:
+                response = {'status': 'error', 'message': 'API unreachable after retry'}
             logger.debug(f"[MARGIN DEBUG] API Response status: {response.get('status')}")
 
             if response.get('status') == 'success':
@@ -472,13 +485,26 @@ class MarginCalculator:
         try:
             logger.debug(f"[CASH MARGIN] Getting cash margin for account: {account.account_name}")
 
-            # Fetch fresh funds data from API
+            # Fetch fresh funds data from API (with retry for transient failures)
             client = ExtendedOpenAlgoAPI(
                 api_key=account.get_api_key(),
                 host=account.host_url
             )
 
-            response = client.funds()
+            import time as _time
+            response = None
+            for _attempt in range(2):
+                try:
+                    response = client.funds()
+                    if response.get('status') == 'success':
+                        break
+                except Exception:
+                    pass
+                if _attempt == 0:
+                    _time.sleep(0.5)
+
+            if not response:
+                response = {'status': 'error', 'message': 'API unreachable after retry'}
 
             if response.get('status') == 'success':
                 funds_data = response.get('data', {})

@@ -134,10 +134,22 @@ def get_account_funds(account_id):
             host=account.host_url
         )
 
-        # Fetch real-time funds data (cache miss or stale)
-        response = client.funds()
+        # Fetch real-time funds data with retry on failure.
+        # Transient failures are common when the dashboard loads 5+ accounts
+        # simultaneously, causing rate limits or timeouts.
+        import time as _time
+        response = None
+        for attempt in range(2):
+            try:
+                response = client.funds()
+                if response.get('status') == 'success':
+                    break
+            except Exception:
+                pass
+            if attempt == 0:
+                _time.sleep(0.5)
 
-        if response.get('status') == 'success':
+        if response and response.get('status') == 'success':
             funds_data = response.get('data', {})
 
             # Cache the data (non-blocking - don't hold up reads if DB is busy)
@@ -185,7 +197,7 @@ def get_account_funds(account_id):
         else:
             return no_cache_response({
                 'status': 'error',
-                'message': response.get('message', 'Failed to fetch funds data')
+                'message': (response or {}).get('message', 'Failed to fetch funds data')
             }, 500)
 
     except Exception as e:

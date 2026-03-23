@@ -621,18 +621,19 @@ async function loadAccountFunds() {
                     totalM2MPnL += accountPnl;
                 }
             } else {
+                // API returned error - keep existing values if they look valid,
+                // only show error indicator if fields were never populated
                 const availableEl = document.getElementById(`available-${account.id}`);
                 const marginEl = document.getElementById(`margin-${account.id}`);
                 const cashEl = document.getElementById(`cash-${account.id}`);
 
-                if (availableEl) availableEl.textContent = '₹0.00L';
-                if (marginEl) marginEl.textContent = '₹0.00L';
-                if (cashEl) cashEl.textContent = '₹0.00L';
-
-                const pnlEl = document.getElementById(`pnl-account-${account.id}`);
-                if (pnlEl) {
-                    pnlEl.textContent = '₹0.00';
-                    pnlEl.className = 'font-bold text-base-content/60';
+                // Only overwrite if the element still shows the initial loading text
+                // This preserves last known values on transient API failures
+                const isInitial = (el) => !el || el.textContent === 'Loading...' || el.textContent === '';
+                if (isInitial(availableEl)) {
+                    if (availableEl) availableEl.textContent = '--';
+                    if (marginEl) marginEl.textContent = '--';
+                    if (cashEl) cashEl.textContent = '--';
                 }
             }
         } else {
