@@ -185,11 +185,215 @@ AlgoMirror is a secure and scalable multi-account management platform built on t
 | Python | 3.12+ | Core runtime |
 | Node.js | 16+ | CSS build system (Tailwind) |
 | OpenAlgo | Latest | Trading platform integration |
-| PostgreSQL | 14+ (17 recommended) | Production database |
+| PostgreSQL | 14+ (**18 recommended — latest stable**) | Production database |
 | TA-Lib | Latest | Technical analysis library |
 
 > **Note:** SQLite is supported for local development/testing. PostgreSQL is **required** for production deployments and is the default for all new installations.
 
+---
+
+## PostgreSQL 18 Setup
+
+### Windows
+
+1. **Download** the PostgreSQL 18 installer from the official EDB site:
+   https://www.postgresql.org/download/windows/
+
+2. **Run the installer** and complete the wizard:
+   - Installation directory: `C:\Program Files\PostgreSQL\18`
+   - Components: PostgreSQL Server, pgAdmin 4, Command Line Tools (Stack Builder optional)
+   - Data directory: accept the default
+   - **Superuser password**: set a strong password (you'll need this for `postgres` user)
+   - Port: `5432` (default)
+   - Locale: default
+
+3. **Add psql to PATH** (so it works from PowerShell):
+   ```powershell
+   [Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\Program Files\PostgreSQL\18\bin", "User")
+   ```
+   Open a new PowerShell window for the change to take effect.
+
+4. **Create the database**:
+   ```powershell
+   psql -U postgres -c "CREATE DATABASE algomirror;"
+   ```
+   Enter the superuser password you set in step 2.
+
+5. **Configure `.env`** (use the password you set):
+   ```
+   DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/algomirror
+   ```
+   If your password contains `@ : / # ? &`, URL-encode it (e.g. `@` → `%40`).
+
+6. **Install the Python driver**:
+   ```powershell
+   uv add psycopg2-binary
+   ```
+
+7. (Optional) **Reset the postgres password** if you forgot it:
+   ```powershell
+   psql -U postgres -c "ALTER USER postgres WITH PASSWORD 'NewPassword';"
+   ```
+
+### Linux (Ubuntu / Debian)
+
+PostgreSQL 18 is not in the default Ubuntu repositories yet — add the official PGDG repository first.
+
+1. **Add the PGDG repository and install PostgreSQL 18**:
+   ```bash
+   sudo apt install -y curl ca-certificates
+   sudo install -d /usr/share/postgresql-common/pgdg
+   sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+     --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+   sudo sh -c 'echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+     https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+     > /etc/apt/sources.list.d/pgdg.list'
+   sudo apt update
+   sudo apt install -y postgresql-18
+   ```
+
+2. **Start and enable the service**:
+   ```bash
+   sudo systemctl enable --now postgresql
+   sudo systemctl status postgresql
+   ```
+
+3. **Set a password for the `postgres` superuser**:
+   ```bash
+   sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'YourStrongPassword';"
+   ```
+
+4. **Create the database**:
+   ```bash
+   sudo -u postgres psql -c "CREATE DATABASE algomirror;"
+   ```
+
+5. **Allow password (md5/scram) auth from localhost** — edit `pg_hba.conf`:
+   ```bash
+   sudo nano /etc/postgresql/18/main/pg_hba.conf
+   ```
+   Ensure these lines exist (replace `peer`/`ident` with `scram-sha-256` for local TCP):
+   ```
+   host    all    all    127.0.0.1/32    scram-sha-256
+   host    all    all    ::1/128         scram-sha-256
+   ```
+   Reload:
+   ```bash
+   sudo systemctl reload postgresql
+   ```
+
+6. **Configure `.env`**:
+   ```
+   DATABASE_URL=postgresql://postgres:YourStrongPassword@localhost:5432/algomirror
+   ```
+
+7. **Install the Python driver and TA-Lib system dependency**:
+   ```bash
+   sudo apt install -y build-essential libpq-dev python3-dev
+   uv add psycopg2-binary
+   ```
+
+### Verify the Connection
+
+```bash
+psql -U postgres -d algomirror -h 127.0.0.1
+```
+
+If this logs you in successfully, your `.env` will work too.
+
+---
+
+## Docker-Based Installation
+
+The repository ships with a `docker-compose.yml` that runs **PostgreSQL 18 (Alpine)**, the AlgoMirror app, and an optional Redis container — no local Python or Postgres install required.
+
+### Prerequisites
+
+- **Docker Desktop** (Windows / macOS) — https://www.docker.com/products/docker-desktop/
+- **Docker Engine + Compose plugin** (Linux) — `sudo apt install docker.io docker-compose-plugin`
+
+### Steps
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/marketcalls/algomirror.git
+   cd algomirror
+   ```
+
+2. **Create the `.env` file**:
+   ```bash
+   cp .env.example .env
+   ```
+
+3. **Set the required Docker variables in `.env`**:
+   ```env
+   # Postgres (used by both the postgres container and the app)
+   POSTGRES_USER=algomirror
+   POSTGRES_PASSWORD=ChangeMeStrongPassword
+   POSTGRES_DB=algomirror
+
+   # Strong random keys (generate with: python -c "import secrets; print(secrets.token_hex(32))")
+   SECRET_KEY=replace-with-random-hex
+   ENCRYPTION_KEY=replace-with-random-fernet-key
+
+   # Where the app reaches your local OpenAlgo instance
+   DEFAULT_OPENALGO_HOST=http://host.docker.internal:5000
+   DEFAULT_OPENALGO_WS=ws://host.docker.internal:8765
+   ```
+   `DATABASE_URL` is set automatically inside the compose file — do not override it.
+
+   To generate an `ENCRYPTION_KEY`:
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+
+4. **Build and start the stack**:
+   ```bash
+   docker compose up -d --build
+   ```
+   This launches:
+   - `algomirror_postgres` — PostgreSQL 18
+   - `algomirror` — the Flask app on port **8000**
+
+5. **Initialize the database** (one-time, after the first start):
+   ```bash
+   docker compose exec algomirror python init_db.py
+   ```
+
+6. **Open the app**: http://localhost:8000 — register the first user (becomes admin).
+
+### Common Docker Commands
+
+```bash
+# View logs
+docker compose logs -f algomirror
+
+# Stop everything
+docker compose down
+
+# Stop AND wipe the database volume (destructive)
+docker compose down -v
+
+# Reset the database without wiping volumes
+docker compose exec algomirror python init_db.py reset
+
+# Open a psql shell inside the postgres container
+docker compose exec postgres psql -U algomirror -d algomirror
+
+# Enable Redis (production rate limiting / sessions)
+docker compose --profile with-redis up -d
+```
+
+### Linux Notes
+
+- `host.docker.internal` works on Docker Desktop. On native Linux Docker, the compose file already adds `extra_hosts: host.docker.internal:host-gateway` so the same hostname resolves to the host machine.
+- If port 8000 is already in use, change the host-side mapping in `docker-compose.yml` (`"8001:8000"`).
+
+### Windows Notes
+
+- Run `docker compose` commands from PowerShell inside the project folder.
+- Make sure Docker Desktop is using the **WSL 2 backend** (Settings → General).
+- File paths inside the container are Linux paths — don't pass Windows paths into volumes.
 
 ---
 
