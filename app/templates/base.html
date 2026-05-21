@@ -41,7 +41,7 @@
             const token = document.querySelector('meta[name="csrf-token"]');
             return token ? token.getAttribute('content') : '';
         }
-        
+
         function fetchWithCSRF(url, options = {}) {
             options.headers = options.headers || {};
             if (options.method && options.method.toUpperCase() !== 'GET') {
@@ -50,6 +50,62 @@
             return fetch(url, options);
         }
     </script>
+
+    {% if current_user.is_authenticated and current_user.is_admin %}
+    <!-- Browser-side error reporter — admin sessions only, throttled, only posts
+         once per unique error per page. Server endpoint validates CSRF, level,
+         and length-caps every field. -->
+    <script>
+    (function () {
+        'use strict';
+        var seen = new Set();
+        var posted = 0;
+        var MAX_PER_PAGE = 20;
+
+        function postErr(payload) {
+            if (posted >= MAX_PER_PAGE) return;
+            posted++;
+            try {
+                fetchWithCSRF('/diagnose/api/errors/client', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(payload),
+                }).catch(function () { /* never recurse */ });
+            } catch (e) { /* swallow */ }
+        }
+
+        function build(level, msg, stack, url) {
+            var key = (msg || '').slice(0, 200) + '|' + (url || '');
+            if (seen.has(key)) return null;
+            seen.add(key);
+            return {
+                level: level,
+                message: (msg || '').slice(0, 2000),
+                stack: (stack || '').slice(0, 20000),
+                url: (url || location.href || '').slice(0, 2000),
+                user_agent: (navigator.userAgent || '').slice(0, 500),
+            };
+        }
+
+        window.addEventListener('error', function (ev) {
+            var p = build('ERROR',
+                ev.message || (ev.error && ev.error.message) || 'window.error',
+                (ev.error && ev.error.stack) || '',
+                ev.filename || location.href);
+            if (p) postErr(p);
+        });
+
+        window.addEventListener('unhandledrejection', function (ev) {
+            var reason = ev.reason;
+            var msg = reason ? (reason.message || String(reason)) : 'unhandledrejection';
+            var stack = (reason && reason.stack) || '';
+            var p = build('ERROR', 'Unhandled promise: ' + msg, stack, location.href);
+            if (p) postErr(p);
+        });
+    })();
+    </script>
+    {% endif %}
 
     {% block head %}{% endblock %}
 </head>

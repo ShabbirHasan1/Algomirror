@@ -1,0 +1,356 @@
+{% extends "layout.html" %}
+
+{% block title %}Diagnose - AlgoMirror{% endblock %}
+{% block page_title %}Diagnose{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+    <!-- Header / actions -->
+    <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+            <h2 class="text-xl font-semibold">System diagnostics</h2>
+            <p class="text-sm text-base-content/60">Admin-only debugging view. Secrets are never shown.</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+            <button id="btn-refresh" class="btn btn-sm btn-primary">Refresh</button>
+            <button id="btn-run-probes" class="btn btn-sm btn-secondary">Run probes</button>
+            <a href="{{ url_for('diagnose.api_report', format='md') }}" class="btn btn-sm btn-ghost">Download .md</a>
+            <a href="{{ url_for('diagnose.api_report', format='txt') }}" class="btn btn-sm btn-ghost">Download .txt</a>
+        </div>
+    </div>
+
+    <!-- Top stats -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="stat bg-base-200 rounded-lg p-4">
+            <div class="stat-title text-xs">Errors total</div>
+            <div class="stat-value text-2xl" id="stat-total">--</div>
+        </div>
+        <div class="stat bg-base-200 rounded-lg p-4">
+            <div class="stat-title text-xs">Last 24h</div>
+            <div class="stat-value text-2xl" id="stat-24h">--</div>
+        </div>
+        <div class="stat bg-base-200 rounded-lg p-4">
+            <div class="stat-title text-xs">Last 1h</div>
+            <div class="stat-value text-2xl" id="stat-1h">--</div>
+        </div>
+        <div class="stat bg-base-200 rounded-lg p-4">
+            <div class="stat-title text-xs">By level</div>
+            <div class="stat-value text-sm font-mono" id="stat-bylevel">--</div>
+        </div>
+    </div>
+
+    <!-- System / Build / Config / Accounts cards -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="card bg-base-100 shadow">
+            <div class="card-body p-4">
+                <h3 class="card-title text-base">System</h3>
+                <pre id="card-system" class="text-xs whitespace-pre-wrap break-all bg-base-200 p-3 rounded">loading…</pre>
+            </div>
+        </div>
+        <div class="card bg-base-100 shadow">
+            <div class="card-body p-4">
+                <h3 class="card-title text-base">Build</h3>
+                <pre id="card-build" class="text-xs whitespace-pre-wrap break-all bg-base-200 p-3 rounded">loading…</pre>
+            </div>
+        </div>
+        <div class="card bg-base-100 shadow">
+            <div class="card-body p-4">
+                <h3 class="card-title text-base">Configuration</h3>
+                <pre id="card-config" class="text-xs whitespace-pre-wrap break-all bg-base-200 p-3 rounded">loading…</pre>
+            </div>
+        </div>
+        <div class="card bg-base-100 shadow">
+            <div class="card-body p-4">
+                <h3 class="card-title text-base">Trading accounts</h3>
+                <pre id="card-accounts" class="text-xs whitespace-pre-wrap break-all bg-base-200 p-3 rounded">loading…</pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Probe results -->
+    <div class="card bg-base-100 shadow">
+        <div class="card-body p-4">
+            <div class="flex items-center justify-between">
+                <h3 class="card-title text-base">Probes</h3>
+                <span id="probes-ran-at" class="text-xs text-base-content/60"></span>
+            </div>
+            <div id="probes-results" class="text-sm">
+                <p class="text-base-content/60">Click <em>Run probes</em> to test database, loopback HTTP, primary OpenAlgo host, primary WebSocket, and Redis.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Error groups -->
+    <div class="card bg-base-100 shadow">
+        <div class="card-body p-4">
+            <h3 class="card-title text-base">Top error groups (by count)</h3>
+            <div class="overflow-x-auto">
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Count</th>
+                            <th>Level</th>
+                            <th>Module</th>
+                            <th>Fingerprint</th>
+                            <th>First seen</th>
+                            <th>Last seen</th>
+                            <th>Sample message</th>
+                        </tr>
+                    </thead>
+                    <tbody id="groups-tbody">
+                        <tr><td colspan="7" class="text-center text-base-content/60">loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent errors -->
+    <div class="card bg-base-100 shadow">
+        <div class="card-body p-4">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+                <h3 class="card-title text-base">Recent errors</h3>
+                <div class="flex flex-wrap items-center gap-2">
+                    <select id="filter-level" class="select select-sm select-bordered">
+                        <option value="">All levels</option>
+                        <option value="ERROR">ERROR</option>
+                        <option value="CRITICAL">CRITICAL</option>
+                        <option value="WARNING">WARNING</option>
+                    </select>
+                    <input id="filter-q" type="text" placeholder="search…" maxlength="200" class="input input-sm input-bordered" />
+                    <button id="btn-errors-refresh" class="btn btn-sm btn-ghost">Apply</button>
+                </div>
+            </div>
+            <div class="overflow-x-auto mt-2">
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th class="w-40">Timestamp</th>
+                            <th class="w-24">Level</th>
+                            <th class="w-40">Module</th>
+                            <th>Message</th>
+                        </tr>
+                    </thead>
+                    <tbody id="errors-tbody">
+                        <tr><td colspan="4" class="text-center text-base-content/60">loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+(function () {
+    'use strict';
+
+    // ----- helpers -----
+    const $ = (id) => document.getElementById(id);
+    const SAFE = (v) => {
+        const s = (v === null || v === undefined) ? '' : String(v);
+        // Hard-cap any single cell at 4 KB on the client too
+        return s.length > 4096 ? s.slice(0, 4096) + '…[truncated]' : s;
+    };
+    const fmtJSON = (obj) => {
+        try { return JSON.stringify(obj, null, 2); }
+        catch (e) { return '<unrenderable>'; }
+    };
+    const setText = (el, text) => { el.textContent = text; };
+
+    function setCell(td, text) {
+        // Always use textContent — never innerHTML — to prevent XSS
+        td.textContent = SAFE(text);
+    }
+
+    function levelBadge(level) {
+        const map = {
+            CRITICAL: 'badge-error',
+            ERROR: 'badge-error',
+            WARNING: 'badge-warning',
+            INFO: 'badge-info',
+            DEBUG: 'badge-ghost',
+        };
+        const cls = map[level] || 'badge-ghost';
+        const span = document.createElement('span');
+        span.className = 'badge badge-sm ' + cls;
+        span.textContent = level || '';
+        return span;
+    }
+
+    // ----- API loaders -----
+    async function loadSystem() {
+        try {
+            const r = await fetch('{{ url_for("diagnose.api_system") }}', { credentials: 'same-origin' });
+            const j = await r.json();
+            if (j.status !== 'success') throw new Error(j.message || 'failed');
+            const d = j.data || {};
+            setText($('card-system'), fmtJSON({ host: d.host, runtime: d.runtime, hardware: d.hardware, time: d.time }));
+            setText($('card-build'), fmtJSON(d.build));
+            setText($('card-config'), fmtJSON(d.config));
+            setText($('card-accounts'), fmtJSON(d.accounts));
+        } catch (e) {
+            setText($('card-system'), 'Error: ' + e.message);
+        }
+    }
+
+    async function loadStats() {
+        try {
+            const r = await fetch('{{ url_for("diagnose.api_errors_stats") }}', { credentials: 'same-origin' });
+            const j = await r.json();
+            if (j.status !== 'success') throw new Error(j.message || 'failed');
+            setText($('stat-total'), j.total ?? 0);
+            setText($('stat-24h'), j.last_24h ?? 0);
+            setText($('stat-1h'), j.last_1h ?? 0);
+            const by = j.by_level || {};
+            setText($('stat-bylevel'), Object.entries(by).map(([k, v]) => k + ':' + v).join('  ') || '–');
+        } catch (e) {
+            setText($('stat-total'), '!');
+        }
+    }
+
+    async function loadGroups() {
+        const tbody = $('groups-tbody');
+        try {
+            const r = await fetch('{{ url_for("diagnose.api_errors_groups") }}', { credentials: 'same-origin' });
+            const j = await r.json();
+            if (j.status !== 'success') throw new Error(j.message || 'failed');
+            tbody.innerHTML = '';
+            if (!j.groups || !j.groups.length) {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td');
+                td.colSpan = 7; td.className = 'text-center text-base-content/60';
+                td.textContent = 'No errors yet — that\'s good.';
+                tr.appendChild(td); tbody.appendChild(tr);
+                return;
+            }
+            for (const g of j.groups) {
+                const tr = document.createElement('tr');
+                const tdCount = document.createElement('td'); tdCount.className = 'font-mono'; setCell(tdCount, g.count);
+                const tdLevel = document.createElement('td'); tdLevel.appendChild(levelBadge(g.level));
+                const tdMod = document.createElement('td'); setCell(tdMod, g.module);
+                const tdFp = document.createElement('td'); tdFp.className = 'font-mono text-xs'; setCell(tdFp, g.fingerprint);
+                const tdFirst = document.createElement('td'); tdFirst.className = 'text-xs'; setCell(tdFirst, g.first_seen);
+                const tdLast = document.createElement('td'); tdLast.className = 'text-xs'; setCell(tdLast, g.last_seen);
+                const tdMsg = document.createElement('td'); tdMsg.className = 'text-xs';
+                setCell(tdMsg, (g.sample && g.sample.message) || '');
+                tr.append(tdCount, tdLevel, tdMod, tdFp, tdFirst, tdLast, tdMsg);
+                tbody.appendChild(tr);
+            }
+        } catch (e) {
+            tbody.innerHTML = '';
+            const tr = document.createElement('tr');
+            const td = document.createElement('td'); td.colSpan = 7; td.className = 'text-error text-center';
+            td.textContent = 'Error: ' + e.message; tr.appendChild(td); tbody.appendChild(tr);
+        }
+    }
+
+    async function loadErrors() {
+        const tbody = $('errors-tbody');
+        try {
+            const level = $('filter-level').value.trim().toUpperCase();
+            const q = $('filter-q').value.trim().slice(0, 200);
+            const params = new URLSearchParams();
+            params.set('limit', '100');
+            if (level) params.set('level', level);
+            if (q) params.set('q', q);
+            const r = await fetch('{{ url_for("diagnose.api_errors_list") }}?' + params.toString(),
+                                  { credentials: 'same-origin' });
+            const j = await r.json();
+            if (j.status !== 'success') throw new Error(j.message || 'failed');
+            tbody.innerHTML = '';
+            if (!j.data || !j.data.length) {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td'); td.colSpan = 4; td.className = 'text-center text-base-content/60';
+                td.textContent = 'No matching entries.'; tr.appendChild(td); tbody.appendChild(tr);
+                return;
+            }
+            // Newest first
+            const items = [...j.data].reverse();
+            for (const e of items) {
+                const tr = document.createElement('tr');
+                tr.className = 'hover cursor-pointer';
+                const tdTs = document.createElement('td'); tdTs.className = 'text-xs font-mono'; setCell(tdTs, e.ts);
+                const tdLv = document.createElement('td'); tdLv.appendChild(levelBadge(e.level));
+                const tdMod = document.createElement('td'); tdMod.className = 'text-xs'; setCell(tdMod, e.module);
+                const tdMsg = document.createElement('td'); tdMsg.className = 'text-xs'; setCell(tdMsg, e.message);
+                tr.append(tdTs, tdLv, tdMod, tdMsg);
+                tbody.appendChild(tr);
+
+                // Expandable traceback row
+                if (e.exception) {
+                    const trace = document.createElement('tr');
+                    trace.className = 'hidden';
+                    const tdTrace = document.createElement('td'); tdTrace.colSpan = 4;
+                    const pre = document.createElement('pre');
+                    pre.className = 'text-xs whitespace-pre-wrap break-all bg-base-200 p-3 rounded';
+                    const exc = Array.isArray(e.exception) ? e.exception.join('') : String(e.exception);
+                    pre.textContent = SAFE(exc);
+                    tdTrace.appendChild(pre); trace.appendChild(tdTrace);
+                    tbody.appendChild(trace);
+                    tr.addEventListener('click', () => trace.classList.toggle('hidden'));
+                }
+            }
+        } catch (e) {
+            tbody.innerHTML = '';
+            const tr = document.createElement('tr');
+            const td = document.createElement('td'); td.colSpan = 4; td.className = 'text-error text-center';
+            td.textContent = 'Error: ' + e.message; tr.appendChild(td); tbody.appendChild(tr);
+        }
+    }
+
+    async function runProbes() {
+        const container = $('probes-results');
+        const ranAtEl = $('probes-ran-at');
+        container.textContent = 'Running…';
+        try {
+            const r = await fetchWithCSRF('{{ url_for("diagnose.api_diagnostics") }}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: '{}',
+            });
+            const j = await r.json();
+            if (j.status !== 'success') throw new Error(j.message || 'failed');
+            ranAtEl.textContent = 'last run: ' + j.ran_at;
+            container.innerHTML = '';
+            const ul = document.createElement('ul');
+            ul.className = 'space-y-1';
+            for (const c of (j.checks || [])) {
+                const li = document.createElement('li');
+                li.className = 'flex items-start gap-2';
+                const dot = document.createElement('span');
+                dot.className = 'badge badge-sm ' + (c.ok ? 'badge-success' : 'badge-error');
+                dot.textContent = c.ok ? 'OK' : 'FAIL';
+                const name = document.createElement('span'); name.className = 'font-medium'; setCell(name, c.name);
+                const ms = document.createElement('span'); ms.className = 'text-xs text-base-content/60';
+                ms.textContent = c.ms !== null && c.ms !== undefined ? '(' + c.ms + ' ms)' : '';
+                const detail = document.createElement('span'); detail.className = 'text-xs text-base-content/70';
+                setCell(detail, ' — ' + (c.detail || ''));
+                li.append(dot, name, ms, detail);
+                ul.appendChild(li);
+            }
+            container.appendChild(ul);
+        } catch (e) {
+            container.textContent = 'Error: ' + e.message;
+        }
+    }
+
+    function refreshAll() {
+        loadSystem();
+        loadStats();
+        loadGroups();
+        loadErrors();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        $('btn-refresh').addEventListener('click', refreshAll);
+        $('btn-run-probes').addEventListener('click', runProbes);
+        $('btn-errors-refresh').addEventListener('click', loadErrors);
+        $('filter-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadErrors(); });
+        refreshAll();
+    });
+})();
+</script>
+{% endblock %}

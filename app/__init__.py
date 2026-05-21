@@ -133,6 +133,17 @@ def setup_logging(app):
         console_handler.setFormatter(formatter)
         app.logger.addHandler(console_handler)
 
+    # Attach centralized JSON error log + sensitive-data redaction filter
+    # for the /diagnose feature. ERROR+ records from any logger land in
+    # logs/errors.jsonl. The filter wraps every existing handler too, so
+    # an accidental logger.error(f"...{api_key}...") gets redacted before
+    # it touches disk.
+    try:
+        from app.utils.json_error_log import attach_json_error_handler
+        attach_json_error_handler(app, log_dir='logs', filename='errors.jsonl')
+    except Exception as e:
+        app.logger.warning(f'Failed to attach JSON error handler: {e}')
+
 def create_app(config_name=None):
     global limiter
     
@@ -229,6 +240,10 @@ def create_app(config_name=None):
     app.register_blueprint(api_bp, url_prefix='/api')
     app.register_blueprint(tradingview_bp)  # url_prefix defined in blueprint (/tradingview)
 
+    # Diagnose blueprint — admin-only debugging UI + APIs at /diagnose
+    from app.diagnose import diagnose_bp
+    app.register_blueprint(diagnose_bp)
+
     # Context processor for global template variables (cached - single-user app)
     @app.context_processor
     def inject_registration_status():
@@ -247,6 +262,44 @@ def create_app(config_name=None):
         flash('Your session has expired. Please refresh and try again.', 'warning')
         # Redirect to login page
         return redirect(url_for('auth.login'))
+
+    # 404 handler — quiet for asset/probe paths, logged for everything else.
+    # Captures the path so the /diagnose page can show broken routes.
+    @app.errorhandler(404)
+    def handle_404(e):
+        from flask import request, jsonify
+        safe_prefixes = (
+            '/favicon', '/robots.txt', '/sitemap', '/manifest',
+            '/sw.js', '/.well-known', '/apple-touch-icon',
+            '/service-worker', '/workbox',
+        )
+        if not request.path.startswith(safe_prefixes):
+            app.logger.warning(f'404 Not Found: {request.method} {request.path}')
+        if request.is_json or request.path.startswith('/api/') or request.path.startswith('/diagnose/api/'):
+            return jsonify({'status': 'error', 'message': 'Not found'}), 404
+        return e, 404
+
+    # 500 handler — log with full traceback so it lands in errors.jsonl.
+    # Returns plain text/JSON to avoid leaking traceback to the browser.
+    @app.errorhandler(500)
+    def handle_500(e):
+        from flask import request, jsonify
+        app.logger.error(f'500 Server Error on {request.method} {request.path}: {e}', exc_info=True)
+        if request.is_json or request.path.startswith('/api/') or request.path.startswith('/diagnose/api/'):
+            return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
+        return 'Internal server error', 500
+
+    # Unhandled exception → logged with traceback, then 500.
+    @app.errorhandler(Exception)
+    def handle_exception(e):
+        from werkzeug.exceptions import HTTPException
+        if isinstance(e, HTTPException):
+            return e
+        from flask import request, jsonify
+        app.logger.error(f'Unhandled exception on {request.method} {request.path}: {e}', exc_info=True)
+        if request.is_json or request.path.startswith('/api/') or request.path.startswith('/diagnose/api/'):
+            return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
+        return 'Internal server error', 500
 
     # Create database tables
     with app.app_context():
