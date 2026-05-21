@@ -11,10 +11,18 @@ class ExtendedOpenAlgoAPI(api):
     def __init__(self, api_key, host="http://127.0.0.1:5000", version="v1", ws_port=8765, ws_url=None, timeout=30):
         """
         Initialize with a 30 second timeout (default).
-        Uses positional args for super().__init__() to avoid FeedAPI MRO conflict.
+        Uses keyword args for super().__init__() because openalgo>=1.0.50
+        changed the api.__init__ signature (timeout is now the 4th positional
+        arg, displacing ws_port).
         """
-        super().__init__(api_key, host, version, ws_port, ws_url)
-        self.timeout = timeout
+        super().__init__(
+            api_key=api_key,
+            host=host,
+            version=version,
+            timeout=timeout,
+            ws_port=ws_port,
+            ws_url=ws_url,
+        )
 
     def _make_request(self, endpoint, payload):
         """Override to guarantee timeout is applied regardless of SDK version"""
