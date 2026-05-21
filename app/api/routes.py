@@ -270,31 +270,23 @@ def get_account_pnl(account_id):
                 pass
 
             # API fallback only for symbols not in WebSocket cache
-            # OPTIMIZED: Parallel fetching instead of sequential (5 symbols * 500ms = 2.5s -> 500ms)
+            # OPTIMIZED: Single multiquotes() call replaces parallel per-symbol fan-out
             symbols_needing_api = [(s, e) for s, e in unique_symbols if (s, e) not in ltp_cache]
             if symbols_needing_api:
                 try:
-                    import concurrent.futures
                     client = ExtendedOpenAlgoAPI(
                         api_key=account.get_api_key(),
                         host=account.host_url
                     )
-
-                    def fetch_quote(sym_exch):
-                        symbol, exchange = sym_exch
-                        try:
-                            quote = client.quotes(symbol=symbol, exchange=exchange)
-                            if quote.get('status') == 'success':
-                                return (symbol, exchange), float(quote.get('data', {}).get('ltp', 0))
-                        except Exception:
-                            pass
-                        return (symbol, exchange), 0
-
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(symbols_needing_api))) as executor:
-                        results = executor.map(fetch_quote, symbols_needing_api, timeout=5)
-                        for key, ltp in results:
-                            if ltp > 0:
-                                ltp_cache[key] = ltp
+                    symbols_payload = [{'symbol': s, 'exchange': e} for s, e in symbols_needing_api]
+                    response = client.multiquotes(symbols=symbols_payload)
+                    if response.get('status') == 'success':
+                        for result in response.get('results', []):
+                            sym = result.get('symbol')
+                            exch = result.get('exchange')
+                            ltp = float(result.get('data', {}).get('ltp') or 0)
+                            if sym and exch and ltp > 0:
+                                ltp_cache[(sym, exch)] = ltp
                 except Exception:
                     pass
 

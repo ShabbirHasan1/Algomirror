@@ -1393,78 +1393,87 @@ class StrategyExecutor:
 
             # IMPROVED: Collect ALL premiums first, then find best match
             # This ensures we don't miss better options due to search order
-            strikes_checked = 0
             strikes_with_data = 0
             strikes_no_data = []  # Track strikes with no data
             all_premiums = []  # Collect ALL valid premiums
 
             logger.debug(f"[PREMIUM SEARCH] Target premium: {target_premium}, ATM Strike: {atm_strike}, Strike step: {strike_step}")
 
-            # PHASE 1: Collect all premium data (don't select yet)
+            # PHASE 1: Batch-fetch all 41 strike premiums in a single multiquotes call
             # Range: ±20 strikes (NIFTY: ATM ± 1000 points | BANKNIFTY: ATM ± 2000 points)
-            for i in range(-20, 21):  # ±20 strikes = 41 total strikes to check
+            if not self.accounts:
+                logger.error(f"[PREMIUM ERROR] No accounts available")
+                return str(atm_strike)
+
+            expiry = self._get_expiry_string(leg)
+            exchange = 'BFO' if leg.instrument == 'SENSEX' else 'NFO'
+
+            strike_list = []
+            symbols_payload = []
+            for i in range(-20, 21):
                 strike = atm_strike + (i * strike_step)
-
-                # Build option symbol for this strike
-                expiry = self._get_expiry_string(leg)
                 symbol = f"{leg.instrument}{expiry}{strike}{leg.option_type}"
+                strike_list.append((strike, symbol))
+                symbols_payload.append({'symbol': symbol, 'exchange': exchange})
 
-                # Get premium for this strike
-                if self.accounts:
-                    client = ExtendedOpenAlgoAPI(
-                        api_key=self.accounts[0].get_api_key(),
-                        host=self.accounts[0].host_url
-                    )
+            strikes_checked = len(strike_list)
 
-                    exchange = 'BFO' if leg.instrument == 'SENSEX' else 'NFO'
-                    strikes_checked += 1
+            client = ExtendedOpenAlgoAPI(
+                api_key=self.accounts[0].get_api_key(),
+                host=self.accounts[0].host_url
+            )
 
-                    try:
-                        # Retry failed API calls up to 2 times
-                        max_retries = 2
-                        response = None
+            # Single batched multiquotes call (retry up to 2 times)
+            response = None
+            max_retries = 2
+            for retry in range(max_retries):
+                try:
+                    response = client.multiquotes(symbols=symbols_payload)
+                    if response and response.get('status') == 'success':
+                        break
+                    elif retry < max_retries - 1:
+                        sleep(0.1)
+                except Exception as retry_error:
+                    if retry < max_retries - 1:
+                        sleep(0.1)
+                    else:
+                        logger.error(f"[PREMIUM] multiquotes call failed after {max_retries} retries: {retry_error}")
+                        return str(atm_strike)
 
-                        for retry in range(max_retries):
-                            try:
-                                response = client.quotes(symbol=symbol, exchange=exchange)
-                                if response and response.get('status') == 'success':
-                                    break  # Success, exit retry loop
-                                elif retry < max_retries - 1:
-                                    sleep(0.1)  # Brief pause before retry
-                            except Exception as retry_error:
-                                if retry < max_retries - 1:
-                                    sleep(0.1)
-                                else:
-                                    raise  # Re-raise on final attempt
+            if not response or response.get('status') != 'success':
+                err = response.get('message', 'Unknown error') if response else 'No response'
+                logger.error(f"[PREMIUM] multiquotes call failed: {err}")
+                return str(atm_strike)
 
-                        if response and response.get('status') == 'success':
-                            premium = response.get('data', {}).get('ltp', 0)
+            # Map symbol -> data from response results
+            results_by_symbol = {}
+            for result in response.get('results', []):
+                sym = result.get('symbol')
+                if sym:
+                    results_by_symbol[sym] = result.get('data', {})
 
-                            # Only consider strikes with premium > 0 (valid trading data)
-                            if premium > 0:
-                                strikes_with_data += 1
-                                diff = abs(premium - target_premium)
+            # Walk strikes, populate all_premiums and strikes_no_data
+            for strike, symbol in strike_list:
+                data = results_by_symbol.get(symbol)
+                if not data:
+                    strikes_no_data.append(strike)
+                    logger.debug(f"[PREMIUM] Strike {strike}: Symbol not in multiquotes response")
+                    continue
 
-                                # Store all valid premiums for analysis
-                                all_premiums.append({
-                                    'strike': strike,
-                                    'premium': premium,
-                                    'diff': diff,
-                                    'direction': 'OVER' if premium > target_premium else 'UNDER' if premium < target_premium else 'EXACT'
-                                })
-
-                                logger.debug(f"[PREMIUM] Strike {strike}: Premium={premium:.2f}, Diff={diff:.2f}")
-                            else:
-                                strikes_no_data.append(strike)
-                                logger.debug(f"[PREMIUM] Strike {strike}: No premium data (LTP=0)")
-                        else:
-                            strikes_no_data.append(strike)
-                            logger.debug(f"[PREMIUM] API call failed for strike {strike}: {response.get('message', 'Unknown error') if response else 'No response'}")
-
-                    except Exception as api_error:
-                        strikes_no_data.append(strike)
-                        logger.debug(f"[PREMIUM] Exception fetching premium for strike {strike}: {api_error}")
-                        continue
+                premium = data.get('ltp', 0)
+                if premium and premium > 0:
+                    strikes_with_data += 1
+                    diff = abs(premium - target_premium)
+                    all_premiums.append({
+                        'strike': strike,
+                        'premium': premium,
+                        'diff': diff,
+                        'direction': 'OVER' if premium > target_premium else 'UNDER' if premium < target_premium else 'EXACT'
+                    })
+                    logger.debug(f"[PREMIUM] Strike {strike}: Premium={premium:.2f}, Diff={diff:.2f}")
+                else:
+                    strikes_no_data.append(strike)
+                    logger.debug(f"[PREMIUM] Strike {strike}: No premium data (LTP=0)")
 
             # PHASE 2: Find the best match from collected data
             if not all_premiums:

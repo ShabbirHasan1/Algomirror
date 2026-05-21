@@ -1442,6 +1442,7 @@ def strategy_positions(strategy_id):
                 symbols_needing_api.append((symbol, exchange))
 
         # Fallback to API call for symbols not in WebSocket cache (using primary account)
+        # OPTIMIZED: Single multiquotes() call replaces per-symbol loop
         if symbols_needing_api:
             primary_account = option_chain_service.primary_account or open_positions[0].account
             try:
@@ -1449,15 +1450,20 @@ def strategy_positions(strategy_id):
                     api_key=primary_account.get_api_key(),
                     host=primary_account.host_url
                 )
-                for symbol, exchange in symbols_needing_api:
-                    try:
-                        quote = client.quotes(symbol=symbol, exchange=exchange)
-                        ltp_cache[(symbol, exchange)] = float(quote.get('data', {}).get('ltp', 0))
-                        logger.debug(f"[POSITIONS] LTP from API: {symbol} = {ltp_cache[(symbol, exchange)]}")
-                    except Exception as e:
-                        logger.warning(f"[POSITIONS] Failed to fetch LTP for {symbol}: {e}")
+                symbols_payload = [{'symbol': s, 'exchange': e} for s, e in symbols_needing_api]
+                response = client.multiquotes(symbols=symbols_payload)
+                if response.get('status') == 'success':
+                    for result in response.get('results', []):
+                        sym = result.get('symbol')
+                        exch = result.get('exchange')
+                        ltp = float(result.get('data', {}).get('ltp') or 0)
+                        if sym and exch:
+                            ltp_cache[(sym, exch)] = ltp
+                            logger.debug(f"[POSITIONS] LTP from API: {sym} = {ltp}")
+                else:
+                    logger.warning(f"[POSITIONS] multiquotes failed: {response.get('message', 'Unknown error')}")
             except Exception as e:
-                logger.warning(f"[POSITIONS] Failed to create client for LTP fetch: {e}")
+                logger.warning(f"[POSITIONS] Failed to fetch LTPs: {e}")
 
     data = []
     for position in positions:
