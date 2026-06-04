@@ -451,7 +451,12 @@ def panic_close_all():
     2. Fetch positionbook to discover open positions
     3. Close each position with freeze-quantity-aware order placement
        (uses splitorder when quantity exceeds freeze limit, regular placeorder otherwise)
+
+    Only the F&O segments AlgoMirror manages (NFO, BFO) are closed; equity,
+    commodity and currency positions held elsewhere are left untouched.
     """
+    PANIC_CLOSE_EXCHANGES = {'NFO', 'BFO'}
+
     accounts = TradingAccount.query.filter_by(
         user_id=current_user.id,
         is_active=True,
@@ -498,14 +503,14 @@ def panic_close_all():
 
             positions = positions_response.get('data', [])
 
-            # Close every non-zero position regardless of exchange.
-            # (Previously this was NFO-only, which silently skipped BFO/SENSEX,
-            # MCX, CDS and NSE positions - leaving them open at the broker while
-            # AlgoMirror reported them closed.)
+            # Close non-zero positions in the F&O segments AlgoMirror manages
+            # (NFO and BFO). This covers BFO/SENSEX (previously skipped by an
+            # NFO-only filter) while leaving equity/commodity/currency positions
+            # held elsewhere untouched.
             open_positions = []
             for pos in positions:
                 qty = int(float(pos.get('quantity', '0')))
-                if qty != 0:
+                if qty != 0 and pos.get('exchange') in PANIC_CLOSE_EXCHANGES:
                     open_positions.append(pos)
 
             if not open_positions:
@@ -577,7 +582,7 @@ def panic_close_all():
                 if verify_response.get('status') == 'success':
                     for pos in verify_response.get('data', []):
                         vqty = int(float(pos.get('quantity', '0')))
-                        if vqty != 0:
+                        if vqty != 0 and pos.get('exchange') in PANIC_CLOSE_EXCHANGES:
                             remaining_open.append({
                                 'symbol': pos.get('symbol'),
                                 'exchange': pos.get('exchange'),
