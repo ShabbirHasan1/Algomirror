@@ -1216,16 +1216,34 @@ def strategy_orderbook(strategy_id):
         user_id=current_user.id
     ).first_or_404()
 
-    # Sync pending orders from broker to ensure latest state
-    # This handles LIMIT orders that may have filled since last check
+    # Sync pending orders from broker to ensure latest state.
+    # This handles LIMIT orders that may have filled since last check.
+    #
+    # IMPORTANT: sync IN PARALLEL with a short timeout. Doing it sequentially
+    # blocked the request for up to (broker_timeout x N orders) - e.g. 5 open
+    # limit orders across 5 accounts could hang ~150s. Because the builder polls
+    # this endpoint every 5s while orders are open, that saturated the worker
+    # threads and made every page spin until timeout. Completed orders have no
+    # pending executions, which is why they were never affected.
     from app.utils.order_status_poller import order_status_poller
     pending_executions = StrategyExecution.query.filter_by(
         strategy_id=strategy_id,
         status='pending'
-    ).all()
-    for execution in pending_executions:
-        if execution.order_id:
-            order_status_poller.sync_order_status(execution.id)
+    ).filter(StrategyExecution.order_id.isnot(None)).all()
+
+    if pending_executions:
+        sync_app = current_app._get_current_object()
+        exec_ids = [e.id for e in pending_executions]
+        with ThreadPoolExecutor(max_workers=min(len(exec_ids), 10)) as executor:
+            futures = [
+                executor.submit(order_status_poller.sync_order_status, eid, sync_app, 10)
+                for eid in exec_ids
+            ]
+            for f in as_completed(futures):
+                try:
+                    f.result()
+                except Exception as e:
+                    logger.error(f"Error syncing order status: {e}")
 
     # Refresh session after sync
     db.session.expire_all()
@@ -1425,16 +1443,34 @@ def strategy_positions(strategy_id):
         user_id=current_user.id
     ).first_or_404()
 
-    # Sync pending orders from broker to ensure latest state
-    # This handles LIMIT orders that may have filled since last check
+    # Sync pending orders from broker to ensure latest state.
+    # This handles LIMIT orders that may have filled since last check.
+    #
+    # IMPORTANT: sync IN PARALLEL with a short timeout. Doing it sequentially
+    # blocked the request for up to (broker_timeout x N orders) - e.g. 5 open
+    # limit orders across 5 accounts could hang ~150s. Because the builder polls
+    # this endpoint every 5s while orders are open, that saturated the worker
+    # threads and made every page spin until timeout. Completed orders have no
+    # pending executions, which is why they were never affected.
     from app.utils.order_status_poller import order_status_poller
     pending_executions = StrategyExecution.query.filter_by(
         strategy_id=strategy_id,
         status='pending'
-    ).all()
-    for execution in pending_executions:
-        if execution.order_id:
-            order_status_poller.sync_order_status(execution.id)
+    ).filter(StrategyExecution.order_id.isnot(None)).all()
+
+    if pending_executions:
+        sync_app = current_app._get_current_object()
+        exec_ids = [e.id for e in pending_executions]
+        with ThreadPoolExecutor(max_workers=min(len(exec_ids), 10)) as executor:
+            futures = [
+                executor.submit(order_status_poller.sync_order_status, eid, sync_app, 10)
+                for eid in exec_ids
+            ]
+            for f in as_completed(futures):
+                try:
+                    f.result()
+                except Exception as e:
+                    logger.error(f"Error syncing order status: {e}")
 
     # Refresh session after sync
     db.session.expire_all()

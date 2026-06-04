@@ -520,11 +520,15 @@ class OrderStatusPoller:
             logger.error(f"[RECOVERY] Error recovering pending orders: {e}", exc_info=True)
             return 0
 
-    def sync_order_status(self, execution_id: int, app=None) -> dict:
+    def sync_order_status(self, execution_id: int, app=None, timeout: int = None) -> dict:
         """
         Manually sync a single order's status from broker.
         Used when refresh is triggered to ensure latest state.
         Returns updated status dict.
+
+        timeout: optional broker request timeout (seconds). A short timeout is
+        used on interactive paths (e.g. the strategy orderbook refresh) so a
+        slow/unresponsive broker fails fast instead of hanging the request.
         """
         try:
             if app:
@@ -549,7 +553,8 @@ class OrderStatusPoller:
             # Fetch status from broker
             client = ExtendedOpenAlgoAPI(
                 api_key=account.get_api_key(),
-                host=account.host_url
+                host=account.host_url,
+                timeout=timeout if timeout else 30
             )
 
             strategy_name = execution.strategy.name if execution.strategy else 'Unknown'
