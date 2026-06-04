@@ -9,7 +9,6 @@ from app.utils.websocket_manager import ProfessionalWebSocketManager
 from app.utils.background_service import option_chain_service
 from app.utils.session_manager import session_manager
 from datetime import datetime
-from app.utils.time_utils import format_timestamp_to_ist
 import json
 import time
 
@@ -169,8 +168,7 @@ def orderbook():
                 order['account_name'] = account.account_name
                 order['account_id'] = account.id
                 order['broker'] = account.broker_name
-                if order.get('timestamp'):
-                    order['timestamp'] = format_timestamp_to_ist(order.get('timestamp'), include_date=True)
+                # Show the timestamp exactly as returned by OpenAlgo (no formatting)
 
             orderbook_data.extend(orders)
     
@@ -208,10 +206,7 @@ def tradebook():
                 trade['account_name'] = account.account_name
                 trade['account_id'] = account.id
                 trade['broker'] = account.broker_name
-                if trade.get('timestamp'):
-                    trade['timestamp'] = format_timestamp_to_ist(trade.get('timestamp'), include_date=True)
-                if trade.get('filltime'):
-                    trade['filltime'] = format_timestamp_to_ist(trade.get('filltime'), include_date=True)
+                # Show the timestamp/filltime exactly as returned by OpenAlgo (no formatting)
 
             tradebook_data.extend(trades)
     
