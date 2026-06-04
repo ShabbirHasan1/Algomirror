@@ -272,9 +272,13 @@ def get_account_pnl(account_id):
             symbols_needing_api = [(s, e) for s, e in unique_symbols if (s, e) not in ltp_cache]
             if symbols_needing_api:
                 try:
+                    # Short timeout for this interactive read (the dashboard aborts
+                    # at ~10s) - on a slow broker we fall back to cached unrealized
+                    # P&L below rather than hanging.
                     client = ExtendedOpenAlgoAPI(
                         api_key=account.get_api_key(),
-                        host=account.host_url
+                        host=account.host_url,
+                        timeout=8
                     )
                     symbols_payload = [{'symbol': s, 'exchange': e} for s, e in symbols_needing_api]
                     response = client.multiquotes(symbols=symbols_payload)
