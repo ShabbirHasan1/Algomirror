@@ -169,9 +169,20 @@ def builder(strategy_id=None):
             strategy.selected_accounts = data.get('selected_accounts', [])
             strategy.allocation_type = data.get('allocation_type', 'equal')
 
-            # Risk management fields (mutually exclusive)
-            # If Supertrend exit is enabled, clear traditional risk management
+            # ---- Risk management (Supertrend XOR Traditional) ----
+            # A risk type is MONITORED only while it is enabled/has a value > 0.
+            # Setting/enabling a risk type RE-ARMS it (clears any prior triggered
+            # state) so monitoring resumes. Clearing it (unchecked, or value reset
+            # to 0) stops monitoring and hides its card in the UI (the templates
+            # guard each card with `{% if strategy.<field> %}`).
+            def _positive_or_none(value):
+                try:
+                    return value if (value is not None and float(value) > 0) else None
+                except (TypeError, ValueError):
+                    return None
+
             if data.get('supertrend_exit_enabled'):
+                # Supertrend mode - clear traditional risk values
                 strategy.max_loss = None
                 strategy.max_profit = None
                 strategy.trailing_sl = None
@@ -180,17 +191,36 @@ def builder(strategy_id=None):
                 strategy.supertrend_period = data.get('supertrend_period', 7)
                 strategy.supertrend_multiplier = data.get('supertrend_multiplier', 3.0)
                 strategy.supertrend_timeframe = data.get('supertrend_timeframe', '5m')
-                # Don't reset triggered flag - it should persist for this strategy
             else:
-                # Traditional risk management
-                strategy.max_loss = data.get('max_loss')
-                strategy.max_profit = data.get('max_profit')
-                strategy.trailing_sl = data.get('trailing_sl')
+                # Traditional risk management - normalize 0 to None so it is neither
+                # monitored nor displayed
+                strategy.max_loss = _positive_or_none(data.get('max_loss'))
+                strategy.max_profit = _positive_or_none(data.get('max_profit'))
+                strategy.trailing_sl = _positive_or_none(data.get('trailing_sl'))
                 strategy.supertrend_exit_enabled = False
                 strategy.supertrend_exit_type = None
                 strategy.supertrend_period = None
                 strategy.supertrend_multiplier = None
                 strategy.supertrend_timeframe = None
+
+            # Re-arm / clear tracking state so monitoring matches the new config.
+            # Supertrend
+            strategy.supertrend_exit_triggered = False
+            strategy.supertrend_exit_triggered_at = None
+            strategy.supertrend_exit_reason = None
+            # Max Loss
+            strategy.max_loss_triggered_at = None
+            strategy.max_loss_exit_reason = None
+            # Max Profit
+            strategy.max_profit_triggered_at = None
+            strategy.max_profit_exit_reason = None
+            # Trailing SL (reset ratchet tracking too)
+            strategy.trailing_sl_active = False
+            strategy.trailing_sl_peak_pnl = 0.0
+            strategy.trailing_sl_initial_stop = None
+            strategy.trailing_sl_trigger_pnl = None
+            strategy.trailing_sl_triggered_at = None
+            strategy.trailing_sl_exit_reason = None
 
             # Save strategy first to get ID
             db.session.flush()

@@ -2806,12 +2806,10 @@ async function refreshRiskStatusSection(fromFormValues = false) {
 
         console.log('[Risk Status] Constructed formData:', formData);
 
-        if (formData.max_loss || formData.max_profit || formData.trailing_sl || formData.supertrend_exit_enabled) {
-            updateRiskStatusHTML(formData);
-            console.log('[Risk Status] Updated from form values');
-        } else {
-            console.warn('[Risk Status] No risk parameters set in form, skipping update');
-        }
+        // Always rebuild the risk display so DISABLING a risk type (or all of
+        // them) is reflected immediately - not just when something is enabled.
+        updateRiskStatusHTML(formData);
+        console.log('[Risk Status] Updated from form values');
         return;
     }
 
@@ -3038,8 +3036,11 @@ function updateRiskStatusHTML(strategyData) {
         `;
     }
 
-    // Update the grid content
-    gridContainer.innerHTML = maxLossHtml + maxProfitHtml + trailingSLHtml + supertrendHtml;
+    // Update the grid content. When every risk type is disabled, show an
+    // explicit empty state so the user sees that nothing is being monitored.
+    const combinedHtml = maxLossHtml + maxProfitHtml + trailingSLHtml + supertrendHtml;
+    gridContainer.innerHTML = combinedHtml ||
+        '<div class="text-sm text-base-content/60 p-3 col-span-full">No risk management configured - this strategy is not being monitored. Set Max Loss / Max Profit / Trailing SL or enable Supertrend.</div>';
 
     // Update the current P&L display
     const currentPnlEl = document.getElementById('riskCurrentPnl');
