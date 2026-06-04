@@ -128,26 +128,24 @@ def get_account_funds(account_id):
                     }
                 })
 
-        # Create API client
+        # Create API client with a SHORT timeout for this interactive read.
+        # The dashboard aborts the request at ~10s, so a 30s broker timeout plus
+        # the old 2-attempt retry made funds spin past the abort and never
+        # populate. Fail fast within the dashboard's window and fall back to
+        # cached data below if the broker is slow.
         client = ExtendedOpenAlgoAPI(
             api_key=account.get_api_key(),
-            host=account.host_url
+            host=account.host_url,
+            timeout=8
         )
 
-        # Fetch real-time funds data with retry on failure.
-        # Transient failures are common when the dashboard loads 5+ accounts
-        # simultaneously, causing rate limits or timeouts.
-        import time as _time
+        # Single attempt - on failure we serve cached data (and the dashboard
+        # polls again in ~15s).
         response = None
-        for attempt in range(2):
-            try:
-                response = client.funds()
-                if response.get('status') == 'success':
-                    break
-            except Exception:
-                pass
-            if attempt == 0:
-                _time.sleep(0.5)
+        try:
+            response = client.funds()
+        except Exception:
+            response = None
 
         if response and response.get('status') == 'success':
             funds_data = response.get('data', {})
