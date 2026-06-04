@@ -1352,6 +1352,8 @@ async function confirmCancelOrder() {
 
     const legItem = cancelOrderLegItem;
     cancelOrderLegItem = null; // Clear reference
+    const legNumber = legItem.querySelector('.leg-number')?.textContent?.trim() || '';
+    const legLabel = legNumber ? ` for Leg ${legNumber}` : '';
 
     try {
         // Get leg ID from execution data
@@ -1367,6 +1369,9 @@ async function confirmCancelOrder() {
             return;
         }
 
+        // Immediate feedback - the broker round-trip can take a few seconds
+        showNotification(`Cancelling order${legLabel}...`, 'info');
+
         const response = await fetch(`/strategy/${strategyId}/leg/${legId}/cancel`, {
             method: 'POST',
             headers: {
@@ -1378,10 +1383,16 @@ async function confirmCancelOrder() {
         const data = await response.json();
 
         if (data.status === 'success') {
-            showNotification('Order cancelled successfully', 'success');
+            showNotification(`Order cancelled successfully${legLabel}`, 'success');
+            // Mark terminal state so the status poller doesn't re-announce it
+            legItem.dataset.statusNotified = 'cancelled';
+            legItem.dataset.isPending = 'false';
             // Unfreeze the leg
             freezeLeg(legItem, false, false);
             // Reload strategy data
+            loadStrategyData();
+        } else if (data.status === 'partial') {
+            showNotification(data.message || `Some orders could not be cancelled${legLabel}`, 'warning');
             loadStrategyData();
         } else {
             showNotification(data.message || 'Failed to cancel order', 'error');
@@ -1542,26 +1553,45 @@ function startStatusPolling() {
                         legItem.dataset.legId = legOrders[0].leg_id;
                     }
 
-                    // Check if all orders are complete or failed
+                    // Classify terminal states. A 'cancelled' order is a user
+                    // action, NOT a failure, so it must not raise an error toast.
+                    // Each toast fires only once per terminal transition (the
+                    // statusNotified flag) to avoid flooding on every 5s poll.
                     const allComplete = legOrders.every(o => o.order_status === 'complete');
+                    const allCancelled = legOrders.every(o => o.order_status === 'cancelled');
+                    const allRejected = legOrders.every(o => o.order_status === 'rejected');
                     const allFailed = legOrders.every(o => ['rejected', 'cancelled'].includes(o.order_status));
-                    const anyOpen = legOrders.some(o => o.order_status === 'open');
 
                     if (allComplete) {
-                        // Mark as executed
                         console.log(`Leg ${legNumber} is now complete`);
                         freezeLeg(legItem, true, false);
                         legItem.dataset.isPending = 'false';
                         legItem.dataset.isExecuted = 'true';
-                        showNotification(`Leg ${legNumber} order filled`, 'success');
+                        if (legItem.dataset.statusNotified !== 'complete') {
+                            showNotification(`Leg ${legNumber} order filled`, 'success');
+                            legItem.dataset.statusNotified = 'complete';
+                        }
                         // Freeze account selection when any leg is executed
                         freezeAccountsIfExecuted();
-                    } else if (allFailed) {
-                        // Unfreeze the leg
-                        console.log(`Leg ${legNumber} orders failed, unfreezing`);
+                    } else if (allCancelled) {
+                        // Intentional cancel - unfreeze silently (the cancel action
+                        // shows its own confirmation toast)
+                        console.log(`Leg ${legNumber} orders cancelled`);
                         freezeLeg(legItem, false, false);
                         legItem.dataset.isPending = 'false';
-                        showNotification(`Leg ${legNumber} order failed`, 'error');
+                        legItem.dataset.statusNotified = 'cancelled';
+                    } else if (allRejected) {
+                        console.log(`Leg ${legNumber} orders rejected, unfreezing`);
+                        freezeLeg(legItem, false, false);
+                        legItem.dataset.isPending = 'false';
+                        if (legItem.dataset.statusNotified !== 'rejected') {
+                            showNotification(`Leg ${legNumber} order rejected`, 'error');
+                            legItem.dataset.statusNotified = 'rejected';
+                        }
+                    } else if (allFailed) {
+                        // Mixed terminal (some cancelled, some rejected) - unfreeze quietly
+                        freezeLeg(legItem, false, false);
+                        legItem.dataset.isPending = 'false';
                     }
                     // If still open, keep as pending
                 });

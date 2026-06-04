@@ -6,6 +6,7 @@ from app.models import Strategy, StrategyLeg, StrategyExecution, TradingAccount,
 from app.utils.rate_limiter import api_rate_limit, heavy_rate_limit
 from app.utils.strategy_executor import StrategyExecutor
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
 
@@ -619,38 +620,49 @@ def cancel_leg_orders(strategy_id, leg_id):
         failed_count = 0
         errors = []
 
-        for execution in all_pending:
+        # Cancel orders in PARALLEL across accounts. Doing this sequentially could
+        # take 40-50s when several accounts are involved (each cancelorder is an
+        # HTTP round-trip with up to a 30s timeout).
+        def cancel_one(order_id, api_key, host_url):
             try:
-                account = execution.account
-                client = ExtendedOpenAlgoAPI(
-                    api_key=account.get_api_key(),
-                    host=account.host_url
-                )
-
-                # Cancel the order using OpenAlgo API
+                client = ExtendedOpenAlgoAPI(api_key=api_key, host=host_url)
                 response = client.cancelorder(
-                    order_id=execution.order_id,
+                    order_id=order_id,
                     strategy=f"Strategy_{strategy.id}"
                 )
-
-                if response.get('status') == 'success':
-                    # Update execution status
-                    execution.status = 'failed'
-                    execution.broker_order_status = 'cancelled'
-                    execution.exit_reason = 'manual_cancel'
-                    execution.exit_time = datetime.utcnow()
-                    cancelled_count += 1
-                    logger.debug(f"Cancelled order {execution.order_id} for leg {leg_id}")
-                else:
-                    failed_count += 1
-                    error_msg = response.get('message', 'Unknown error')
-                    errors.append(f"Order {execution.order_id}: {error_msg}")
-                    logger.error(f"Failed to cancel order {execution.order_id}: {error_msg}")
-
+                return (order_id, response, None)
             except Exception as e:
+                return (order_id, None, str(e))
+
+        # Collect account creds in the main thread (avoid lazy-load inside threads)
+        cancel_jobs = [
+            (execution.order_id, execution.account.get_api_key(), execution.account.host_url)
+            for execution in all_pending
+        ]
+
+        results_by_order = {}
+        if cancel_jobs:
+            with ThreadPoolExecutor(max_workers=min(len(cancel_jobs), 10)) as executor:
+                futures = [executor.submit(cancel_one, *job) for job in cancel_jobs]
+                for future in as_completed(futures):
+                    order_id, response, err = future.result()
+                    results_by_order[order_id] = (response, err)
+
+        now = datetime.utcnow()
+        for execution in all_pending:
+            response, err = results_by_order.get(execution.order_id, (None, 'No response'))
+            if err is None and response and response.get('status') == 'success':
+                execution.status = 'failed'
+                execution.broker_order_status = 'cancelled'
+                execution.exit_reason = 'manual_cancel'
+                execution.exit_time = now
+                cancelled_count += 1
+                logger.debug(f"Cancelled order {execution.order_id} for leg {leg_id}")
+            else:
                 failed_count += 1
-                errors.append(f"Order {execution.order_id}: {str(e)}")
-                logger.error(f"Exception cancelling order {execution.order_id}: {e}")
+                error_msg = err or (response.get('message', 'Unknown error') if response else 'No response')
+                errors.append(f"Order {execution.order_id}: {error_msg}")
+                logger.error(f"Failed to cancel order {execution.order_id}: {error_msg}")
 
         # Check if leg has any remaining active executions (entered with complete status)
         remaining_active = StrategyExecution.query.filter_by(
