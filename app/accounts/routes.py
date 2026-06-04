@@ -697,7 +697,13 @@ def reconcile_positions():
     Surfaces positions that are OPEN at the broker but NOT tracked as 'entered'
     in AlgoMirror (orphans), so the dashboard can warn the user. Read-only -
     does not place orders or modify any records.
+
+    Only F&O segments (NFO, BFO) are reconciled - AlgoMirror manages F&O
+    strategies, so equity/commodity/currency positions held elsewhere are
+    intentionally ignored to avoid false warnings.
     """
+    RECONCILE_EXCHANGES = {'NFO', 'BFO'}
+
     accounts = TradingAccount.query.filter_by(
         user_id=current_user.id,
         is_active=True,
@@ -717,7 +723,7 @@ def reconcile_positions():
             broker_open = []
             for pos in resp.get('data', []):
                 qty = int(float(pos.get('quantity', '0')))
-                if qty != 0:
+                if qty != 0 and pos.get('exchange') in RECONCILE_EXCHANGES:
                     broker_open.append({
                         'symbol': pos.get('symbol'),
                         'exchange': pos.get('exchange'),
