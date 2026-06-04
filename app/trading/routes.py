@@ -242,6 +242,17 @@ def positions():
     app = current_app._get_current_object()
     results = fetch_broker_data_parallel(accounts, 'positionbook', app)
 
+    def _position_is_open(position):
+        """True only for positions with a non-zero net quantity.
+
+        Brokers keep returning squared-off positions with quantity 0 for the
+        rest of the trading day; those are closed and should not be shown.
+        """
+        try:
+            return float(position.get('quantity', 0)) != 0
+        except (ValueError, TypeError):
+            return False
+
     def enrich_positions(positions_list, account):
         """Add account info and calculate metrics for positions"""
         for position in positions_list:
@@ -265,9 +276,10 @@ def positions():
         if response and response.get('status') == 'success':
             pos_list = response.get('data', [])
             enrich_positions(pos_list, account)
-            positions_data.extend(pos_list)
+            # Show only open positions; hide squared-off (quantity 0) rows
+            positions_data.extend([p for p in pos_list if _position_is_open(p)])
 
-            # Update cache
+            # Update cache (store full list so cache stays complete)
             account.last_positions_data = pos_list
             account.last_data_update = datetime.utcnow()
             try:
@@ -278,7 +290,7 @@ def positions():
             # Use cached data if API fails
             pos_list = account.last_positions_data
             enrich_positions(pos_list, account)
-            positions_data.extend(pos_list)
+            positions_data.extend([p for p in pos_list if _position_is_open(p)])
     
     # Calculate totals
     total_pnl = sum(float(p.get('pnl', 0)) for p in positions_data)
