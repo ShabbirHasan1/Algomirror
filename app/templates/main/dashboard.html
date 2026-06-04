@@ -41,6 +41,18 @@
         </div>
     </div>
 
+    <!-- Reconciliation warning: positions open at broker but not tracked by AlgoMirror -->
+    <div id="reconcileWarning" class="alert alert-warning shadow-lg mb-6" style="display: none;">
+        <div class="flex-1">
+            <h3 class="font-bold">Untracked open positions detected at broker</h3>
+            <div id="reconcileWarningBody" class="text-sm mt-1"></div>
+        </div>
+        <div class="flex gap-2">
+            <a href="{{ url_for('main.account_positions') }}" class="btn btn-sm">View Positions</a>
+            <button onclick="document.getElementById('reconcileWarning').style.display='none'" class="btn btn-sm btn-ghost">Dismiss</button>
+        </div>
+    </div>
+
     <!-- Overall Summary Stats -->
     <div class="stats stats-vertical lg:stats-horizontal shadow w-full mb-6 bg-base-100">
         <div class="stat">
@@ -452,6 +464,7 @@ function manualRefresh() {
     loadStrategyMetrics();
     loadAccountFunds();
     loadStrategyPnL();
+    loadPositionReconciliation();
 }
 
 // Load strategy positions and P&L data - PARALLEL fetching for all strategies
@@ -1054,10 +1067,35 @@ function showNotification(message, type) {
     setTimeout(() => toast.remove(), duration);
 }
 
+// Reconciliation: warn about positions open at the broker but not tracked by AlgoMirror
+async function loadPositionReconciliation() {
+    const warnEl = document.getElementById('reconcileWarning');
+    if (!warnEl) return;
+    try {
+        const resp = await fetch('/accounts/reconcile-positions', { signal: AbortSignal.timeout(15000) });
+        const data = await resp.json();
+        if (data.status === 'success' && data.orphan_count > 0) {
+            const lines = data.accounts.map(a => {
+                const syms = a.orphans.map(p => `${p.symbol} ${p.quantity} (${p.exchange})`).join(', ');
+                return `<div><span class="font-semibold">${a.account_name}:</span> ${syms}</div>`;
+            }).join('');
+            document.getElementById('reconcileWarningBody').innerHTML =
+                `${data.orphan_count} position(s) open at the broker are not tracked by AlgoMirror. Close them manually from the broker / Account Positions.` + lines;
+            warnEl.style.display = '';
+        } else {
+            warnEl.style.display = 'none';
+        }
+    } catch (e) {
+        // Advisory only - stay silent on failure
+    }
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     checkTradingHours();
     pollingIntervals.tradingHoursCheck = setInterval(checkTradingHours, 60000);
+    loadPositionReconciliation();
+    pollingIntervals.reconcileCheck = setInterval(loadPositionReconciliation, 60000);
 });
 </script>
 {% endblock %}

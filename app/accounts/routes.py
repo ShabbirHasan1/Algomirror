@@ -1,4 +1,5 @@
 import threading
+import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import render_template, redirect, url_for, flash, request, current_app, jsonify
@@ -491,16 +492,20 @@ def panic_close_all():
                     'account_name': account_name,
                     'status': 'error',
                     'message': 'Failed to fetch positions',
-                    'cancel_orders': cancel_msg
+                    'cancel_orders': cancel_msg,
+                    'remaining_open': None
                 }
 
             positions = positions_response.get('data', [])
 
-            # Filter to non-zero quantity NFO positions only
+            # Close every non-zero position regardless of exchange.
+            # (Previously this was NFO-only, which silently skipped BFO/SENSEX,
+            # MCX, CDS and NSE positions - leaving them open at the broker while
+            # AlgoMirror reported them closed.)
             open_positions = []
             for pos in positions:
                 qty = int(float(pos.get('quantity', '0')))
-                if qty != 0 and pos.get('exchange') == 'NFO':
+                if qty != 0:
                     open_positions.append(pos)
 
             if not open_positions:
@@ -508,10 +513,11 @@ def panic_close_all():
                     'account_id': account_id,
                     'account_name': account_name,
                     'status': 'success',
-                    'message': 'No open NFO positions',
+                    'message': 'No open positions',
                     'cancel_orders': cancel_msg,
                     'positions_closed': 0,
-                    'positions_total': 0
+                    'positions_total': 0,
+                    'remaining_open': []
                 }
 
             # Step 3: Close each position with freeze-quantity-aware placement
@@ -558,6 +564,30 @@ def panic_close_all():
 
             closed_count = sum(1 for r in position_results if r['status'] == 'success')
 
+            # Step 4: Re-fetch the positionbook to VERIFY what is actually flat.
+            # MARKET orders take a moment to fill, so allow a short settle time.
+            #   remaining_open = [] -> verified flat
+            #   remaining_open = [..] -> still open at broker (close failed / not filled)
+            #   remaining_open = None -> verification itself failed (treat as unknown,
+            #                            never assume closed)
+            remaining_open = []
+            try:
+                time.sleep(2)
+                verify_response = client.positionbook()
+                if verify_response.get('status') == 'success':
+                    for pos in verify_response.get('data', []):
+                        vqty = int(float(pos.get('quantity', '0')))
+                        if vqty != 0:
+                            remaining_open.append({
+                                'symbol': pos.get('symbol'),
+                                'exchange': pos.get('exchange'),
+                                'quantity': vqty
+                            })
+                else:
+                    remaining_open = None
+            except Exception:
+                remaining_open = None
+
             return {
                 'account_id': account_id,
                 'account_name': account_name,
@@ -565,6 +595,7 @@ def panic_close_all():
                 'cancel_orders': cancel_msg,
                 'positions_closed': closed_count,
                 'positions_total': len(open_positions),
+                'remaining_open': remaining_open,
                 'details': position_results
             }
         except Exception as e:
@@ -572,7 +603,8 @@ def panic_close_all():
                 'account_id': account_id,
                 'account_name': account_name,
                 'status': 'error',
-                'message': str(e)
+                'message': str(e),
+                'remaining_open': None
             }
 
     # Collect account data before threading (avoid lazy-load issues in threads)
@@ -590,37 +622,145 @@ def panic_close_all():
         for future in as_completed(futures):
             results.append(future.result())
 
-    # Update StrategyExecution records: mark 'entered' positions as 'exited'
+    # Reconcile StrategyExecution records with what is ACTUALLY closed at the broker.
+    # Only mark an execution 'exited' if its symbol is no longer open in that account's
+    # broker positionbook. Positions that remain open (close failed / not filled) stay
+    # 'entered' so AlgoMirror keeps reflecting reality and the UI can warn the user.
     try:
-        account_ids = [acc.id for acc in accounts]
         now = datetime.utcnow()
-        StrategyExecution.query.filter(
-            StrategyExecution.account_id.in_(account_ids),
-            StrategyExecution.status == 'entered'
-        ).update({
-            'status': 'exited',
-            'exit_reason': 'panic_close',
-            'exit_time': now
-        }, synchronize_session='fetch')
+        for r in results:
+            acc_id = r.get('account_id')
+            if acc_id is None:
+                continue
+            remaining = r.get('remaining_open')
+            if remaining is None:
+                # Verification failed for this account - do NOT blindly mark exited
+                continue
+            remaining_symbols = {p.get('symbol') for p in remaining}
+            entered = StrategyExecution.query.filter(
+                StrategyExecution.account_id == acc_id,
+                StrategyExecution.status == 'entered'
+            ).all()
+            for ex in entered:
+                if ex.symbol not in remaining_symbols:
+                    ex.status = 'exited'
+                    ex.exit_reason = 'panic_close'
+                    ex.exit_time = now
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f'Failed to update strategy executions on panic close: {str(e)}')
+        current_app.logger.error(f'Failed to reconcile strategy executions on panic close: {str(e)}')
 
     success_count = sum(1 for r in results if r.get('status') == 'success')
     total_closed = sum(r.get('positions_closed', 0) for r in results)
     total_positions = sum(r.get('positions_total', 0) for r in results)
+    total_remaining = sum(len(r.get('remaining_open') or []) for r in results)
+    verify_failed = sum(1 for r in results if r.get('remaining_open') is None)
+
+    message = f'Closed {total_closed}/{total_positions} positions across {success_count}/{len(accounts)} accounts'
+    if total_remaining > 0:
+        message += f'. WARNING: {total_remaining} position(s) still OPEN at broker - manual action required'
+    if verify_failed > 0:
+        message += f'. Could not verify {verify_failed} account(s) - check positions manually'
+
+    if total_remaining > 0 or verify_failed > 0:
+        overall_status = 'warning'
+    elif success_count > 0 or total_positions == 0:
+        overall_status = 'success'
+    else:
+        overall_status = 'error'
 
     log_activity('panic_close_all', {
         'total_accounts': len(accounts),
         'success_count': success_count,
         'total_positions_closed': total_closed,
         'total_positions_found': total_positions,
+        'total_remaining_open': total_remaining,
+        'verify_failed_accounts': verify_failed,
         'results': results
     })
 
     return jsonify({
-        'status': 'success' if success_count > 0 else 'error',
-        'message': f'Closed {total_closed}/{total_positions} positions across {success_count}/{len(accounts)} accounts',
+        'status': overall_status,
+        'message': message,
+        'remaining_open': total_remaining,
         'results': results
+    })
+
+
+@accounts_bp.route('/reconcile-positions', methods=['GET'])
+@login_required
+@api_rate_limit()
+def reconcile_positions():
+    """Compare each broker's positionbook with AlgoMirror-tracked positions.
+
+    Surfaces positions that are OPEN at the broker but NOT tracked as 'entered'
+    in AlgoMirror (orphans), so the dashboard can warn the user. Read-only -
+    does not place orders or modify any records.
+    """
+    accounts = TradingAccount.query.filter_by(
+        user_id=current_user.id,
+        is_active=True,
+        connection_status='connected'
+    ).all()
+
+    app = current_app._get_current_object()
+    results = []
+
+    def check_account(account_id, api_key, host_url, account_name):
+        try:
+            client = ExtendedOpenAlgoAPI(api_key=api_key, host=host_url)
+            resp = client.positionbook()
+            if resp.get('status') != 'success':
+                return None
+
+            broker_open = []
+            for pos in resp.get('data', []):
+                qty = int(float(pos.get('quantity', '0')))
+                if qty != 0:
+                    broker_open.append({
+                        'symbol': pos.get('symbol'),
+                        'exchange': pos.get('exchange'),
+                        'quantity': qty
+                    })
+
+            if not broker_open:
+                return None
+
+            with app.app_context():
+                tracked = StrategyExecution.query.filter(
+                    StrategyExecution.account_id == account_id,
+                    StrategyExecution.status == 'entered'
+                ).all()
+                tracked_symbols = {ex.symbol for ex in tracked}
+
+            orphans = [p for p in broker_open if p['symbol'] not in tracked_symbols]
+            if orphans:
+                return {
+                    'account_id': account_id,
+                    'account_name': account_name,
+                    'orphans': orphans
+                }
+            return None
+        except Exception:
+            return None
+
+    account_data = [
+        (acc.id, acc.get_api_key(), acc.host_url, acc.account_name)
+        for acc in accounts
+    ]
+
+    if account_data:
+        with ThreadPoolExecutor(max_workers=min(len(account_data), 10)) as executor:
+            futures = [executor.submit(check_account, *data) for data in account_data]
+            for future in as_completed(futures):
+                r = future.result()
+                if r:
+                    results.append(r)
+
+    orphan_count = sum(len(r['orphans']) for r in results)
+    return jsonify({
+        'status': 'success',
+        'orphan_count': orphan_count,
+        'accounts': results
     })

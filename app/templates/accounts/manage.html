@@ -293,7 +293,12 @@ function panicCloseAll() {
 
             if (data.results) {
                 data.results.forEach(r => {
-                    if (r.status === 'success') {
+                    if (r.remaining_open && r.remaining_open.length > 0) {
+                        const syms = r.remaining_open.map(p => `${p.symbol} (${p.quantity})`).join(', ');
+                        showToast(`${r.account_name}: STILL OPEN at broker - ${syms}`, 'error');
+                    } else if (r.remaining_open === null) {
+                        showToast(`${r.account_name}: could not verify positions - check manually`, 'warning');
+                    } else if (r.status === 'success') {
                         const msg = r.positions_total > 0
                             ? `${r.account_name}: ${r.positions_closed}/${r.positions_total} positions closed`
                             : `${r.account_name}: No open positions`;
@@ -304,7 +309,9 @@ function panicCloseAll() {
                 });
             }
 
-            showToast(data.message, data.status === 'success' ? 'success' : 'error');
+            const finalType = data.status === 'success' ? 'success'
+                            : (data.status === 'warning' ? 'warning' : 'error');
+            showToast(data.message, finalType);
         })
         .catch(error => {
             btn.disabled = false;
