@@ -198,6 +198,9 @@ def builder(strategy_id=None):
                 strategy.max_loss = _positive_or_none(data.get('max_loss'))
                 strategy.max_profit = _positive_or_none(data.get('max_profit'))
                 strategy.trailing_sl = _positive_or_none(data.get('trailing_sl'))
+                # TSL unit: 'amount' (rupee terms, default) or 'percentage'
+                tsl_type = data.get('trailing_sl_type')
+                strategy.trailing_sl_type = tsl_type if tsl_type in ('amount', 'percentage') else 'amount'
                 strategy.supertrend_exit_enabled = False
                 strategy.supertrend_exit_type = None
                 strategy.supertrend_period = None
@@ -1544,6 +1547,11 @@ def strategy_positions(strategy_id):
                 logger.warning(f"[POSITIONS] Failed to fetch LTPs: {e}")
 
     data = []
+    # Net premium of OPEN positions in rupee terms:
+    # BUY leg adds (debit paid), SELL leg subtracts (credit received).
+    # > 0 = Net Debit, < 0 = Net Credit
+    open_net_premium = 0.0
+    open_premium_count = 0
     for position in positions:
         # Skip orders that were failed or have problematic broker status
         # BUT: If position has entry_price, it's filled - include it regardless of status
@@ -1586,6 +1594,11 @@ def strategy_positions(strategy_id):
             # Update unrealized P&L in database
             position.unrealized_pnl = pnl
 
+            # Accumulate net premium in rupee terms (quantity is signed: SELL is negative)
+            if quantity != 0:
+                open_net_premium += (position.entry_price or 0) * quantity
+                open_premium_count += 1
+
         # Get actual product type (MIS, NRML, CNC) from strategy
         actual_product = strategy.product_order_type.upper() if strategy.product_order_type else 'MIS'
 
@@ -1622,8 +1635,26 @@ def strategy_positions(strategy_id):
         'peak_pnl': 0.0,
         'trigger_pnl': None,
         'current_pnl': total_pnl,
-        'trailing_pct': strategy.trailing_sl or 0
+        'trailing_pct': strategy.trailing_sl or 0,
+        'trailing_type': strategy.trailing_sl_type or 'percentage',
+        'tsl_rupees': None,
+        'tsl_percent': None
     }
+
+    # Compute the TSL value in BOTH rupee and percent terms so the UI can show
+    # the configured unit alongside its equivalent. Conversion base is the
+    # absolute net premium of open positions (capital at risk).
+    if tsl_status['enabled']:
+        conv_base = abs(open_net_premium)
+        tsl_value = float(strategy.trailing_sl)
+        if tsl_status['trailing_type'] == 'percentage':
+            tsl_status['tsl_percent'] = round(tsl_value, 2)
+            if conv_base > 0:
+                tsl_status['tsl_rupees'] = round(conv_base * tsl_value / 100, 2)
+        else:  # 'amount' (rupees) or legacy 'points' - both are absolute P&L values
+            tsl_status['tsl_rupees'] = round(tsl_value, 2)
+            if conv_base > 0:
+                tsl_status['tsl_percent'] = round(tsl_value / conv_base * 100, 2)
 
     if tsl_status['enabled']:
         # Get open positions count and calculate entry value
@@ -1756,7 +1787,13 @@ def strategy_positions(strategy_id):
         'status': 'success',
         'data': data,
         'total_pnl': total_pnl,
-        'tsl_status': tsl_status
+        'tsl_status': tsl_status,
+        'open_net_premium': {
+            'has_open': open_premium_count > 0,
+            'value': round(open_net_premium, 2),
+            'abs_value': round(abs(open_net_premium), 2),
+            'premium_type': 'Net Credit' if open_net_premium < 0 else 'Net Debit'
+        }
     })
 
 @strategy_bp.route('/<int:strategy_id>/close-all', methods=['POST'])

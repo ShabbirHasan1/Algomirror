@@ -123,7 +123,7 @@
                     <div class="bg-base-200 rounded-lg p-3">
                         <div class="flex justify-between text-sm mb-1">
                             <span>Trailing SL</span>
-                            <span class="font-mono">{{ strategy.trailing_sl }} {{ strategy.trailing_sl_type or '%' }}</span>
+                            <span class="font-mono">{% if strategy.trailing_sl_type == 'amount' %}&#8377;{{ strategy.trailing_sl }}{% elif strategy.trailing_sl_type == 'points' %}{{ strategy.trailing_sl }} pts{% else %}{{ strategy.trailing_sl }}%{% endif %}</span>
                         </div>
                         <div class="badge badge-info badge-sm" id="trailingSL-{{ strategy.id }}">
                             {{ 'Active' if strategy.auto_exit_on_max_loss else 'Manual' }}

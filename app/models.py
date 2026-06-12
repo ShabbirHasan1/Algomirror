@@ -284,7 +284,7 @@ class Strategy(db.Model):
     risk_check_interval = db.Column(db.Integer, default=1)  # Seconds between checks
     auto_exit_on_max_loss = db.Column(db.Boolean, default=True)
     auto_exit_on_max_profit = db.Column(db.Boolean, default=True)
-    trailing_sl_type = db.Column(db.String(20), default='percentage')  # 'percentage', 'points', 'amount'
+    trailing_sl_type = db.Column(db.String(20), default='amount')  # 'amount' (rupees, default), 'percentage', 'points' (legacy)
 
     # Trailing SL tracking state (AFL-style ratcheting stop)
     # Logic: stop_level = peak_pnl * (1 - trailing_pct/100)

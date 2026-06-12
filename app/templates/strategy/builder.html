@@ -236,9 +236,15 @@
                                        placeholder="0" value="{{ strategy.max_profit if strategy else '0' }}">
                             </div>
                             <div class="form-control flex-1">
-                                <label class="label py-0"><span class="label-text text-xs ">Trail SL (%)</span></label>
-                                <input type="number" id="trailingSl" class="input input-bordered input-sm "
-                                       placeholder="0" step="0.1" value="{{ strategy.trailing_sl if strategy else '0' }}">
+                                <label class="label py-0"><span class="label-text text-xs ">Trail SL</span></label>
+                                <div class="flex gap-1">
+                                    <select id="trailingSlType" class="select select-bordered select-sm w-16">
+                                        <option value="amount" {% if not strategy or strategy.trailing_sl_type in ['amount', 'points'] %}selected{% endif %}>&#8377;</option>
+                                        <option value="percentage" {% if strategy and (not strategy.trailing_sl_type or strategy.trailing_sl_type == 'percentage') %}selected{% endif %}>%</option>
+                                    </select>
+                                    <input type="number" id="trailingSl" class="input input-bordered input-sm flex-1 min-w-0"
+                                           placeholder="0" step="0.1" value="{{ strategy.trailing_sl if strategy else '0' }}">
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -489,6 +495,11 @@
                             <div class="stat-value text-sm" id="open-positions-count">0</div>
                             <div class="stat-desc">Currently active</div>
                         </div>
+                        <div class="stat" id="open-net-premium-stat" style="display: none;">
+                            <div class="stat-title" id="open-net-premium-title">Net Premium</div>
+                            <div class="stat-value text-sm" id="open-net-premium-value">--</div>
+                            <div class="stat-desc">Open positions only (rupee terms)</div>
+                        </div>
                         {% endif %}
                     </div>
                 </div>
@@ -659,7 +670,7 @@
                                     </svg>
                                     Trailing SL
                                 </span>
-                                <span class="font-mono font-bold">{{ strategy.trailing_sl }}{{ '%' if strategy.trailing_sl_type == 'percentage' else ' pts' if strategy.trailing_sl_type == 'points' else '' }}</span>
+                                <span class="font-mono font-bold" id="riskTrailingSLValue">{% if strategy.trailing_sl_type == 'amount' %}&#8377;{{ strategy.trailing_sl }}{% elif strategy.trailing_sl_type == 'points' %}{{ strategy.trailing_sl }} pts{% else %}{{ strategy.trailing_sl }}%{% endif %}</span>
                             </div>
                             <div class="text-sm mb-2">
                                 <span class="text-base-content/60">Status:</span>
@@ -1960,6 +1971,7 @@ function saveStrategy(execute = false) {
         max_loss: useTraditional ? (parseFloat(document.getElementById('maxLoss').value) || null) : null,
         max_profit: useTraditional ? (parseFloat(document.getElementById('maxProfit').value) || null) : null,
         trailing_sl: useTraditional ? (parseFloat(document.getElementById('trailingSl').value) || null) : null,
+        trailing_sl_type: document.getElementById('trailingSlType')?.value || 'amount',
         // Supertrend exit settings (only if selected)
         supertrend_exit_enabled: useSupertrendExit,
         supertrend_exit_type: useSupertrendExit ? document.getElementById('supertrendExitType').value : null,
@@ -2824,7 +2836,7 @@ async function refreshRiskStatusSection(fromFormValues = false) {
             max_loss: useTraditional ? (parseFloat(document.getElementById('maxLoss')?.value) || null) : null,
             max_profit: useTraditional ? (parseFloat(document.getElementById('maxProfit')?.value) || null) : null,
             trailing_sl: useTraditional ? (parseFloat(document.getElementById('trailingSl')?.value) || null) : null,
-            trailing_sl_type: 'percentage',
+            trailing_sl_type: document.getElementById('trailingSlType')?.value || 'amount',
             auto_exit_on_max_loss: useTraditional,
             auto_exit_on_max_profit: useTraditional,
             supertrend_exit_enabled: useSupertrendExit,
@@ -2957,7 +2969,8 @@ function updateRiskStatusHTML(strategyData) {
     // Build HTML for Trailing SL
     let trailingSLHtml = '';
     if (strategyData.trailing_sl) {
-        const tslType = strategyData.trailing_sl_type === 'percentage' ? '%' : (strategyData.trailing_sl_type === 'points' ? ' pts' : '');
+        const tslDisplay = strategyData.trailing_sl_type === 'percentage' ? `${strategyData.trailing_sl}%` :
+                           (strategyData.trailing_sl_type === 'points' ? `${strategyData.trailing_sl} pts` : `₹${strategyData.trailing_sl}`);
         trailingSLHtml = `
             <div class="bg-base-100 rounded-lg p-3" id="riskTrailingSLCard">
                 <div class="flex justify-between text-sm mb-2">
@@ -2967,7 +2980,7 @@ function updateRiskStatusHTML(strategyData) {
                         </svg>
                         Trailing SL
                     </span>
-                    <span class="font-mono font-bold">${strategyData.trailing_sl}${tslType}</span>
+                    <span class="font-mono font-bold" id="riskTrailingSLValue">${tslDisplay}</span>
                 </div>
                 <div class="text-sm mb-2">
                     <span class="text-base-content/60">Status:</span>
@@ -3522,6 +3535,26 @@ async function loadPositions(strategyId) {
                 }
             }
 
+            // Update combined premium of open positions (Net Credit/Net Debit in rupee terms)
+            // Shown only while there are open positions
+            const netPremiumStat = document.getElementById('open-net-premium-stat');
+            if (netPremiumStat) {
+                const np = data.open_net_premium;
+                if (np && np.has_open) {
+                    netPremiumStat.style.display = '';
+                    const titleEl = document.getElementById('open-net-premium-title');
+                    if (titleEl) titleEl.textContent = np.premium_type;
+                    const valueEl = document.getElementById('open-net-premium-value');
+                    if (valueEl) {
+                        const isCredit = np.premium_type === 'Net Credit';
+                        valueEl.textContent = `₹${parseFloat(np.abs_value).toFixed(2)}`;
+                        valueEl.className = `stat-value text-sm ${isCredit ? 'text-success' : 'text-warning'}`;
+                    }
+                } else {
+                    netPremiumStat.style.display = 'none';
+                }
+            }
+
             // Update Total P&L display - update ALL P&L elements
             if (data.total_pnl !== undefined) {
                 const pnl = parseFloat(data.total_pnl) || 0;
@@ -3599,6 +3632,24 @@ function updateTrailingSLDisplay(tslStatus) {
         if (peakEl) peakEl.textContent = '--';
         if (initialEl) initialEl.textContent = '--';
         return;
+    }
+
+    // Show configured TSL value with its equivalent in the other unit
+    // (rupee value also shown as %, percent value also shown as rupees)
+    const tslValueEl = document.getElementById('riskTrailingSLValue');
+    if (tslValueEl) {
+        const isPct = tslStatus.trailing_type === 'percentage';
+        const rupees = tslStatus.tsl_rupees;
+        const percent = tslStatus.tsl_percent;
+        if (isPct) {
+            tslValueEl.textContent = (rupees !== null && rupees !== undefined)
+                ? `${tslStatus.trailing_pct}% (₹${parseFloat(rupees).toFixed(2)})`
+                : `${tslStatus.trailing_pct}%`;
+        } else {
+            tslValueEl.textContent = (percent !== null && percent !== undefined)
+                ? `₹${tslStatus.trailing_pct} (${parseFloat(percent).toFixed(2)}%)`
+                : `₹${tslStatus.trailing_pct}`;
+        }
     }
 
     // Check if there are no open positions
