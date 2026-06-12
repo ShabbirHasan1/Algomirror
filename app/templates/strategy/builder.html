@@ -500,6 +500,11 @@
                             <div class="stat-value text-sm" id="open-net-premium-value">--</div>
                             <div class="stat-desc">Open positions only (rupee terms)</div>
                         </div>
+                        <div class="stat" id="open-option-qty-stat" style="display: none;">
+                            <div class="stat-title">Option Qty</div>
+                            <div class="stat-value text-sm" id="open-option-qty-value">--</div>
+                            <div class="stat-desc">CE/PE itemized by Buy/Sell (open only)</div>
+                        </div>
                         {% endif %}
                     </div>
                 </div>
@@ -3431,6 +3436,9 @@ async function loadPositions(strategyId) {
             const positions = data.data || [];
             console.log(`Loaded ${positions.length} positions:`, positions);
 
+            // Itemized CE/PE quantity totals for OPEN positions, split by Buy/Sell
+            const openOptionQty = { CE: { BUY: 0, SELL: 0 }, PE: { BUY: 0, SELL: 0 } };
+
             if (positions.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="11" class="text-center text-base-content/60">No positions</td></tr>';
 
@@ -3512,6 +3520,11 @@ async function loadPositions(strategyId) {
                         typeBadgeClass = 'badge-info';
                     }
 
+                    // Accumulate open option quantities by type and side
+                    if (isOpenPosition && (instrumentType === 'CE' || instrumentType === 'PE')) {
+                        openOptionQty[instrumentType][action] += Math.abs(qty);
+                    }
+
                     row.innerHTML = `
                         <td><span class="badge badge-outline badge-sm">${position.account_name || 'N/A'}</span></td>
                         <td><span class="badge badge-primary badge-sm">${position.leg_number || '-'}</span></td>
@@ -3552,6 +3565,32 @@ async function loadPositions(strategyId) {
                     }
                 } else {
                     netPremiumStat.style.display = 'none';
+                }
+            }
+
+            // Update itemized CE/PE Buy/Sell quantities for open positions
+            const optionQtyStat = document.getElementById('open-option-qty-stat');
+            if (optionQtyStat) {
+                const items = [];
+                [['CE', 'BUY'], ['CE', 'SELL'], ['PE', 'BUY'], ['PE', 'SELL']].forEach(([type, side]) => {
+                    const q = openOptionQty[type][side];
+                    if (q > 0) {
+                        const typeBadge = type === 'CE' ? 'badge-success' : 'badge-error';
+                        const sideBadge = side === 'BUY' ? 'badge-success' : 'badge-error';
+                        items.push(
+                            `<span class="inline-flex items-center gap-1 mr-2">` +
+                            `<span class="badge ${typeBadge} badge-sm">${type}</span>` +
+                            `<span class="badge ${sideBadge} badge-outline badge-sm">${side === 'BUY' ? 'B' : 'S'}</span>` +
+                            `<span class="font-mono">${q}</span>` +
+                            `</span>`
+                        );
+                    }
+                });
+                if (items.length > 0) {
+                    optionQtyStat.style.display = '';
+                    document.getElementById('open-option-qty-value').innerHTML = items.join('');
+                } else {
+                    optionQtyStat.style.display = 'none';
                 }
             }
 
