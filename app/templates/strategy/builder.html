@@ -429,7 +429,7 @@
                     <div class="stats shadow mt-4 w-full">
                         <div class="stat">
                             <div class="stat-title">Total P&L (Realized + Unrealized)</div>
-                            <div class="stat-value text-sm" id="total-pnl">
+                            <div class="stat-value text-2xl" id="total-pnl">
                                 {% if strategy %}
                                     ₹{{ "%.0f"|format(strategy.total_pnl) }}
                                 {% else %}
@@ -441,7 +441,7 @@
                         {% if strategy %}
                         <div class="stat">
                             <div class="stat-title">Realized P&L</div>
-                            <div class="stat-value text-sm {% if strategy.realized_pnl >= 0 %}text-success{% else %}text-error{% endif %}" id="realized-pnl">
+                            <div class="stat-value text-2xl {% if strategy.realized_pnl >= 0 %}text-success{% else %}text-error{% endif %}" id="realized-pnl">
                                 ₹{{ "%.0f"|format(strategy.realized_pnl) }}
                             </div>
                             <div class="stat-desc">From closed positions</div>
@@ -480,7 +480,7 @@
                     <div class="stats shadow mt-4 w-full">
                         <div class="stat">
                             <div class="stat-title">Total P&L (Realized + Unrealized)</div>
-                            <div class="stat-value text-sm" id="total-positions-pnl">
+                            <div class="stat-value text-2xl" id="total-positions-pnl">
                                 {% if strategy %}
                                     ₹{{ "%.0f"|format(strategy.total_pnl) }}
                                 {% else %}
@@ -492,17 +492,17 @@
                         {% if strategy %}
                         <div class="stat">
                             <div class="stat-title">Open Positions</div>
-                            <div class="stat-value text-sm" id="open-positions-count">0</div>
+                            <div class="stat-value text-2xl" id="open-positions-count">0</div>
                             <div class="stat-desc">Currently active</div>
                         </div>
                         <div class="stat" id="open-net-premium-stat" style="display: none;">
                             <div class="stat-title" id="open-net-premium-title">Net Premium</div>
-                            <div class="stat-value text-sm" id="open-net-premium-value">--</div>
+                            <div class="stat-value text-2xl" id="open-net-premium-value">--</div>
                             <div class="stat-desc">Open positions only (rupee terms)</div>
                         </div>
                         <div class="stat" id="open-option-qty-stat" style="display: none;">
                             <div class="stat-title">Option Qty</div>
-                            <div class="stat-value text-sm" id="open-option-qty-value">--</div>
+                            <div class="stat-value text-2xl" id="open-option-qty-value">--</div>
                             <div class="stat-desc">CE/PE itemized by Buy/Sell (open only)</div>
                         </div>
                         {% endif %}
@@ -547,17 +547,17 @@
                     <div class="stats shadow mt-4 w-full">
                         <div class="stat">
                             <div class="stat-title">Total Unrealized P&L</div>
-                            <div class="stat-value text-sm" id="riskmonitor-total-pnl">₹0</div>
+                            <div class="stat-value text-2xl" id="riskmonitor-total-pnl">₹0</div>
                             <div class="stat-desc">Real-time from WebSocket</div>
                         </div>
                         <div class="stat">
                             <div class="stat-title">Legs with SL</div>
-                            <div class="stat-value text-sm" id="riskmonitor-sl-count">0</div>
+                            <div class="stat-value text-2xl" id="riskmonitor-sl-count">0</div>
                             <div class="stat-desc">Stop loss configured</div>
                         </div>
                         <div class="stat">
                             <div class="stat-title">Legs with TP</div>
-                            <div class="stat-value text-sm" id="riskmonitor-tp-count">0</div>
+                            <div class="stat-value text-2xl" id="riskmonitor-tp-count">0</div>
                             <div class="stat-desc">Take profit configured</div>
                         </div>
                     </div>
@@ -2481,7 +2481,7 @@ function updateRiskMonitorTable(strategyData) {
     const totalPnlEl = document.getElementById('riskmonitor-total-pnl');
     if (totalPnlEl) {
         totalPnlEl.textContent = `₹${totalPnl.toFixed(0)}`;
-        totalPnlEl.className = `stat-value text-sm ${totalPnl >= 0 ? 'text-success' : 'text-error'}`;
+        totalPnlEl.className = `stat-value text-2xl ${totalPnl >= 0 ? 'text-success' : 'text-error'}`;
     }
 
     const slCountEl = document.getElementById('riskmonitor-sl-count');
@@ -3561,7 +3561,7 @@ async function loadPositions(strategyId) {
                     if (valueEl) {
                         const isCredit = np.premium_type === 'Net Credit';
                         valueEl.textContent = `₹${parseFloat(np.abs_value).toFixed(0)}`;
-                        valueEl.className = `stat-value text-sm ${isCredit ? 'text-success' : 'text-warning'}`;
+                        valueEl.className = `stat-value text-2xl ${isCredit ? 'text-success' : 'text-warning'}`;
                     }
                 } else {
                     netPremiumStat.style.display = 'none';
@@ -3603,21 +3603,21 @@ async function loadPositions(strategyId) {
                 const totalPnlEl = document.getElementById('total-pnl');
                 if (totalPnlEl) {
                     totalPnlEl.textContent = `₹${pnl.toFixed(0)}`;
-                    totalPnlEl.className = `stat-value text-sm ${pnlClass}`;
+                    totalPnlEl.className = `stat-value text-2xl ${pnlClass}`;
                 }
 
                 // Update Positions tab Total P&L
                 const positionsPnlEl = document.getElementById('total-positions-pnl');
                 if (positionsPnlEl) {
                     positionsPnlEl.textContent = `₹${pnl.toFixed(0)}`;
-                    positionsPnlEl.className = `stat-value text-sm ${pnlClass}`;
+                    positionsPnlEl.className = `stat-value text-2xl ${pnlClass}`;
                 }
 
                 // Update Risk Monitor tab Total P&L
                 const riskMonitorPnlEl = document.getElementById('riskmonitor-total-pnl');
                 if (riskMonitorPnlEl) {
                     riskMonitorPnlEl.textContent = `₹${pnl.toFixed(0)}`;
-                    riskMonitorPnlEl.className = `stat-value text-sm ${pnlClass}`;
+                    riskMonitorPnlEl.className = `stat-value text-2xl ${pnlClass}`;
                 }
 
                 // Update Risk Status Current P&L
