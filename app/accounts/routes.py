@@ -924,3 +924,220 @@ def close_orphan_position():
     except Exception as e:
         current_app.logger.error(f'Failed to close orphan position {symbol} on account {account_id}: {str(e)}')
         return jsonify({'status': 'error', 'message': f'Failed to close position: {str(e)}'}), 500
+
+
+@accounts_bp.route('/close-all-orphan-positions', methods=['POST'])
+@login_required
+@heavy_rate_limit()
+def close_all_orphan_positions():
+    """Close EVERY untracked (orphan) broker position across all accounts at once.
+
+    This is the bulk version of close_orphan_position: instead of squaring off
+    one symbol on one account, it finds every position that is open at the
+    broker but NOT tracked as 'entered' in AlgoMirror, on all connected
+    accounts, and closes them in a single click from the reconciliation banner.
+
+    Unlike panic_close_all (which closes ALL positions), this only touches the
+    mismatched/untracked positions - tracked strategy positions are left alone.
+
+    Each square-off is freeze-quantity aware: place_order_with_freeze_check()
+    uses splitorder when the quantity exceeds the symbol's freeze limit and
+    regular placeorder otherwise. Accounts are processed in parallel and every
+    account is re-verified afterwards to report what is actually flat.
+    """
+    CLOSE_EXCHANGES = {'NFO', 'BFO'}
+
+    accounts = TradingAccount.query.filter_by(
+        user_id=current_user.id,
+        is_active=True,
+        connection_status='connected'
+    ).all()
+
+    if not accounts:
+        return jsonify({'status': 'error', 'message': 'No active connected accounts found'})
+
+    app = current_app._get_current_object()
+    user_id = current_user.id
+
+    def close_account_orphans(account_id, api_key, host_url, account_name):
+        position_results = []
+        try:
+            client = ExtendedOpenAlgoAPI(api_key=api_key, host=host_url)
+
+            positions_response = client.positionbook()
+            if positions_response.get('status') != 'success':
+                return {
+                    'account_id': account_id,
+                    'account_name': account_name,
+                    'status': 'error',
+                    'message': 'Failed to fetch positions',
+                    'orphans_total': 0,
+                    'orphans_closed': 0,
+                    'remaining_open': None
+                }
+
+            # Open F&O positions at the broker
+            broker_open = []
+            for pos in positions_response.get('data', []):
+                qty = int(float(pos.get('quantity', '0')))
+                if qty != 0 and pos.get('exchange') in CLOSE_EXCHANGES:
+                    broker_open.append(pos)
+
+            # Symbols AlgoMirror tracks as live for this account
+            with app.app_context():
+                tracked = StrategyExecution.query.filter(
+                    StrategyExecution.account_id == account_id,
+                    StrategyExecution.status == 'entered'
+                ).all()
+                tracked_symbols = {ex.symbol for ex in tracked}
+
+            # Orphans = open at broker but not tracked by AlgoMirror
+            orphans = [p for p in broker_open if p.get('symbol') not in tracked_symbols]
+
+            if not orphans:
+                return {
+                    'account_id': account_id,
+                    'account_name': account_name,
+                    'status': 'success',
+                    'orphans_total': 0,
+                    'orphans_closed': 0,
+                    'remaining_open': []
+                }
+
+            orphan_symbols = set()
+            with app.app_context():
+                for pos in orphans:
+                    symbol = pos.get('symbol')
+                    exchange = pos.get('exchange')
+                    product = pos.get('product', 'MIS')
+                    qty = int(float(pos.get('quantity', '0')))
+                    # Reverse to close: long -> SELL, short -> BUY
+                    close_action = 'SELL' if qty > 0 else 'BUY'
+                    close_qty = abs(qty)
+                    orphan_symbols.add(symbol)
+
+                    try:
+                        response = place_order_with_freeze_check(
+                            client=client,
+                            user_id=user_id,
+                            strategy="AlgoMirror_Reconcile",
+                            symbol=symbol,
+                            exchange=exchange,
+                            action=close_action,
+                            quantity=close_qty,
+                            price_type='MARKET',
+                            product=product
+                        )
+                        position_results.append({
+                            'symbol': symbol,
+                            'action': close_action,
+                            'quantity': close_qty,
+                            'status': response.get('status', 'error'),
+                            'message': response.get('message', ''),
+                            'split_order': response.get('split_order', False)
+                        })
+                    except Exception as e:
+                        position_results.append({
+                            'symbol': symbol,
+                            'action': close_action,
+                            'quantity': close_qty,
+                            'status': 'error',
+                            'message': str(e)
+                        })
+
+            closed_count = sum(1 for r in position_results if r['status'] == 'success')
+
+            # Verify which orphan symbols are actually flat now. Only the symbols we
+            # tried to close are considered (don't report tracked positions here).
+            #   remaining_open = []   -> verified flat
+            #   remaining_open = [..] -> still open (close failed / not yet filled)
+            #   remaining_open = None -> verification failed (never assume closed)
+            remaining_open = []
+            try:
+                time.sleep(2)
+                verify_response = client.positionbook()
+                if verify_response.get('status') == 'success':
+                    for pos in verify_response.get('data', []):
+                        vqty = int(float(pos.get('quantity', '0')))
+                        if (vqty != 0 and pos.get('exchange') in CLOSE_EXCHANGES
+                                and pos.get('symbol') in orphan_symbols):
+                            remaining_open.append({
+                                'symbol': pos.get('symbol'),
+                                'exchange': pos.get('exchange'),
+                                'quantity': vqty
+                            })
+                else:
+                    remaining_open = None
+            except Exception:
+                remaining_open = None
+
+            return {
+                'account_id': account_id,
+                'account_name': account_name,
+                'status': 'success' if closed_count > 0 else 'error',
+                'orphans_total': len(orphans),
+                'orphans_closed': closed_count,
+                'remaining_open': remaining_open,
+                'details': position_results
+            }
+        except Exception as e:
+            return {
+                'account_id': account_id,
+                'account_name': account_name,
+                'status': 'error',
+                'message': str(e),
+                'orphans_total': 0,
+                'orphans_closed': 0,
+                'remaining_open': None
+            }
+
+    account_data = [
+        (acc.id, acc.get_api_key(), acc.host_url, acc.account_name)
+        for acc in accounts
+    ]
+
+    results = []
+    with ThreadPoolExecutor(max_workers=min(len(account_data), 10)) as executor:
+        futures = [executor.submit(close_account_orphans, *data) for data in account_data]
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    total_orphans = sum(r.get('orphans_total', 0) for r in results)
+    total_closed = sum(r.get('orphans_closed', 0) for r in results)
+    total_remaining = sum(len(r.get('remaining_open') or []) for r in results)
+    verify_failed = sum(1 for r in results if r.get('remaining_open') is None)
+
+    if total_orphans == 0:
+        message = 'No untracked positions found to close'
+        overall_status = 'success'
+    else:
+        message = f'Closed {total_closed}/{total_orphans} untracked position(s)'
+        if total_remaining > 0:
+            message += f'. WARNING: {total_remaining} still OPEN at broker - manual action required'
+        if verify_failed > 0:
+            message += f'. Could not verify {verify_failed} account(s) - check positions manually'
+
+        if total_remaining > 0 or verify_failed > 0:
+            overall_status = 'warning'
+        elif total_closed > 0:
+            overall_status = 'success'
+        else:
+            overall_status = 'error'
+
+    log_activity('close_all_orphan_positions', {
+        'total_accounts': len(accounts),
+        'total_orphans': total_orphans,
+        'total_closed': total_closed,
+        'total_remaining_open': total_remaining,
+        'verify_failed_accounts': verify_failed,
+        'results': results
+    })
+
+    return jsonify({
+        'status': overall_status,
+        'message': message,
+        'total_orphans': total_orphans,
+        'total_closed': total_closed,
+        'remaining_open': total_remaining,
+        'results': results
+    })

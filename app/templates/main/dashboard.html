@@ -48,7 +48,7 @@
             <div id="reconcileWarningBody" class="text-sm mt-1"></div>
         </div>
         <div class="flex gap-2">
-            <a href="{{ url_for('main.account_positions') }}" class="btn btn-sm">View Positions</a>
+            <button id="closeAllOrphansBtn" onclick="closeAllOrphans(this)" class="btn btn-sm btn-error">Close All</button>
             <button onclick="document.getElementById('reconcileWarning').style.display='none'" class="btn btn-sm btn-ghost">Dismiss</button>
         </div>
     </div>
@@ -1103,7 +1103,7 @@ async function loadPositionReconciliation() {
             const bodyEl = document.getElementById('reconcileWarningBody');
             bodyEl.innerHTML =
                 `${data.orphan_count} position(s) open at the broker are not tracked by AlgoMirror. ` +
-                `Close them directly below, or from the broker / Account Positions.` + lines;
+                `Use Close All to square off every account at once, or close each one individually below.` + lines;
             bodyEl.querySelectorAll('.orphan-close-btn').forEach(btn => {
                 btn.addEventListener('click', () => closeOrphanPosition(
                     parseInt(btn.dataset.accountId, 10),
@@ -1150,6 +1150,39 @@ async function closeOrphanPosition(accountId, accountName, symbol, exchange, btn
         loadPositionReconciliation();
     } catch (e) {
         showNotification('Failed to send close request - check your connection and try again', 'error');
+        btn.disabled = false;
+        btn.textContent = original;
+    }
+}
+
+// Square off ALL untracked (orphan) positions across every account in one click.
+// Freeze-quantity aware on the backend (uses splitorder above the freeze limit).
+async function closeAllOrphans(btn) {
+    if (!confirm('Close ALL untracked positions across all accounts?\n\nThis places MARKET square-off orders at the broker for every position listed above.')) {
+        return;
+    }
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Closing all...';
+    try {
+        const resp = await fetch('/accounts/close-all-orphan-positions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+            },
+            // Closes orphans on every account (accounts in parallel, positions
+            // sequentially per account, each with a broker round-trip + verify),
+            // so allow a generous timeout before giving up on the response.
+            signal: AbortSignal.timeout(90000)
+        });
+        const data = await resp.json();
+        const type = data.status === 'success' ? 'success' : (data.status === 'warning' ? 'warning' : 'error');
+        showNotification(data.message || 'Close all completed', type);
+        // Refresh the banner so closed positions drop off (and any that did not fill stay).
+        loadPositionReconciliation();
+    } catch (e) {
+        showNotification('Failed to send close-all request - check your connection and try again', 'error');
         btn.disabled = false;
         btn.textContent = original;
     }
