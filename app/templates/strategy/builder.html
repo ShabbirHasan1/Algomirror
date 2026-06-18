@@ -426,14 +426,14 @@
                             </tbody>
                         </table>
                     </div>
-                    <div class="stats shadow mt-4">
+                    <div class="stats shadow mt-4 w-full">
                         <div class="stat">
                             <div class="stat-title">Total P&L (Realized + Unrealized)</div>
-                            <div class="stat-value" id="total-pnl">
+                            <div class="stat-value text-sm" id="total-pnl">
                                 {% if strategy %}
-                                    ₹{{ "%.2f"|format(strategy.total_pnl) }}
+                                    ₹{{ "%.0f"|format(strategy.total_pnl) }}
                                 {% else %}
-                                    ₹0.00
+                                    ₹0
                                 {% endif %}
                             </div>
                             <div class="stat-desc">Persists even after positions close</div>
@@ -442,7 +442,7 @@
                         <div class="stat">
                             <div class="stat-title">Realized P&L</div>
                             <div class="stat-value text-sm {% if strategy.realized_pnl >= 0 %}text-success{% else %}text-error{% endif %}" id="realized-pnl">
-                                ₹{{ "%.2f"|format(strategy.realized_pnl) }}
+                                ₹{{ "%.0f"|format(strategy.realized_pnl) }}
                             </div>
                             <div class="stat-desc">From closed positions</div>
                         </div>
@@ -477,14 +477,14 @@
                             </tbody>
                         </table>
                     </div>
-                    <div class="stats shadow mt-4">
+                    <div class="stats shadow mt-4 w-full">
                         <div class="stat">
                             <div class="stat-title">Total P&L (Realized + Unrealized)</div>
-                            <div class="stat-value" id="total-positions-pnl">
+                            <div class="stat-value text-sm" id="total-positions-pnl">
                                 {% if strategy %}
-                                    ₹{{ "%.2f"|format(strategy.total_pnl) }}
+                                    ₹{{ "%.0f"|format(strategy.total_pnl) }}
                                 {% else %}
-                                    ₹0.00
+                                    ₹0
                                 {% endif %}
                             </div>
                             <div class="stat-desc">Includes open and closed positions</div>
@@ -544,10 +544,10 @@
                             </tbody>
                         </table>
                     </div>
-                    <div class="stats shadow mt-4">
+                    <div class="stats shadow mt-4 w-full">
                         <div class="stat">
                             <div class="stat-title">Total Unrealized P&L</div>
-                            <div class="stat-value" id="riskmonitor-total-pnl">₹0.00</div>
+                            <div class="stat-value text-sm" id="riskmonitor-total-pnl">₹0</div>
                             <div class="stat-desc">Real-time from WebSocket</div>
                         </div>
                         <div class="stat">
@@ -2480,8 +2480,8 @@ function updateRiskMonitorTable(strategyData) {
     // Update stats
     const totalPnlEl = document.getElementById('riskmonitor-total-pnl');
     if (totalPnlEl) {
-        totalPnlEl.textContent = `₹${totalPnl.toFixed(2)}`;
-        totalPnlEl.className = `stat-value ${totalPnl >= 0 ? 'text-success' : 'text-error'}`;
+        totalPnlEl.textContent = `₹${totalPnl.toFixed(0)}`;
+        totalPnlEl.className = `stat-value text-sm ${totalPnl >= 0 ? 'text-success' : 'text-error'}`;
     }
 
     const slCountEl = document.getElementById('riskmonitor-sl-count');
@@ -3560,7 +3560,7 @@ async function loadPositions(strategyId) {
                     const valueEl = document.getElementById('open-net-premium-value');
                     if (valueEl) {
                         const isCredit = np.premium_type === 'Net Credit';
-                        valueEl.textContent = `₹${parseFloat(np.abs_value).toFixed(2)}`;
+                        valueEl.textContent = `₹${parseFloat(np.abs_value).toFixed(0)}`;
                         valueEl.className = `stat-value text-sm ${isCredit ? 'text-success' : 'text-warning'}`;
                     }
                 } else {
@@ -3602,29 +3602,29 @@ async function loadPositions(strategyId) {
                 // Update main Total P&L (Orderbook tab)
                 const totalPnlEl = document.getElementById('total-pnl');
                 if (totalPnlEl) {
-                    totalPnlEl.textContent = `₹${pnl.toFixed(2)}`;
-                    totalPnlEl.className = `stat-value ${pnlClass}`;
+                    totalPnlEl.textContent = `₹${pnl.toFixed(0)}`;
+                    totalPnlEl.className = `stat-value text-sm ${pnlClass}`;
                 }
 
                 // Update Positions tab Total P&L
                 const positionsPnlEl = document.getElementById('total-positions-pnl');
                 if (positionsPnlEl) {
-                    positionsPnlEl.textContent = `₹${pnl.toFixed(2)}`;
-                    positionsPnlEl.className = `stat-value ${pnlClass}`;
+                    positionsPnlEl.textContent = `₹${pnl.toFixed(0)}`;
+                    positionsPnlEl.className = `stat-value text-sm ${pnlClass}`;
                 }
 
                 // Update Risk Monitor tab Total P&L
                 const riskMonitorPnlEl = document.getElementById('riskmonitor-total-pnl');
                 if (riskMonitorPnlEl) {
-                    riskMonitorPnlEl.textContent = `₹${pnl.toFixed(2)}`;
-                    riskMonitorPnlEl.className = `stat-value ${pnlClass}`;
+                    riskMonitorPnlEl.textContent = `₹${pnl.toFixed(0)}`;
+                    riskMonitorPnlEl.className = `stat-value text-sm ${pnlClass}`;
                 }
 
                 // Update Risk Status Current P&L
                 const riskPnlElement = document.getElementById('riskCurrentPnl');
                 if (riskPnlElement) {
                     const pnl = parseFloat(data.total_pnl) || 0;
-                    riskPnlElement.textContent = `₹${pnl.toFixed(2)}`;
+                    riskPnlElement.textContent = `₹${pnl.toFixed(0)}`;
                     riskPnlElement.className = pnl >= 0 ? 'font-bold text-lg ml-1 text-success' : 'font-bold text-lg ml-1 text-error';
                 }
 
