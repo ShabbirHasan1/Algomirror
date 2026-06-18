@@ -775,3 +775,152 @@ def reconcile_positions():
         'orphan_count': orphan_count,
         'accounts': results
     })
+
+
+@accounts_bp.route('/close-orphan-position', methods=['POST'])
+@login_required
+@heavy_rate_limit()
+def close_orphan_position():
+    """Close a single untracked (orphan) broker position directly from AlgoMirror.
+
+    Used by the dashboard reconciliation banner so the user can square off a
+    position that is open at the broker but not tracked by AlgoMirror, without
+    logging into OpenAlgo / the broker terminal.
+
+    Request JSON: {account_id, symbol, exchange}
+
+    The live quantity, direction and product are read from the broker's
+    positionbook (NOT trusted from the request) so we always close the exact
+    net position that is actually open. The square-off is freeze-quantity
+    aware: place_order_with_freeze_check() automatically uses splitorder when
+    the quantity exceeds the symbol's freeze limit and regular placeorder
+    otherwise. After placing, the positionbook is re-read to verify the symbol
+    is flat.
+    """
+    CLOSE_EXCHANGES = {'NFO', 'BFO'}
+
+    data = request.get_json(silent=True) or {}
+    account_id = data.get('account_id')
+    symbol = (data.get('symbol') or '').strip()
+    exchange = (data.get('exchange') or '').strip()
+
+    if not account_id or not symbol or not exchange:
+        return jsonify({'status': 'error', 'message': 'account_id, symbol and exchange are required'}), 400
+
+    if exchange not in CLOSE_EXCHANGES:
+        return jsonify({'status': 'error',
+                        'message': f'Only F&O segments {sorted(CLOSE_EXCHANGES)} can be closed from here'}), 400
+
+    # Account must belong to the current user and be connected
+    account = TradingAccount.query.filter_by(
+        id=account_id,
+        user_id=current_user.id,
+        is_active=True,
+        connection_status='connected'
+    ).first()
+
+    if not account:
+        return jsonify({'status': 'error', 'message': 'Account not found or not connected'}), 404
+
+    try:
+        client = ExtendedOpenAlgoAPI(api_key=account.get_api_key(), host=account.host_url)
+
+        # Read the live position from the broker to get the authoritative
+        # quantity / direction / product for this symbol.
+        positions_response = client.positionbook()
+        if positions_response.get('status') != 'success':
+            return jsonify({'status': 'error', 'message': 'Failed to fetch positions from broker'}), 502
+
+        live = None
+        for pos in positions_response.get('data', []):
+            if pos.get('symbol') == symbol and pos.get('exchange') == exchange:
+                qty = int(float(pos.get('quantity', '0')))
+                if qty != 0:
+                    live = {'quantity': qty, 'product': pos.get('product', 'MIS')}
+                break
+
+        if not live:
+            # Already flat at the broker - nothing to close. The banner will
+            # clear itself on the next reconciliation poll.
+            return jsonify({'status': 'success', 'already_flat': True,
+                            'message': f'{symbol} is already flat at the broker'})
+
+        qty = live['quantity']
+        product = live['product']
+        # Reverse to close: long (qty > 0) -> SELL, short (qty < 0) -> BUY
+        close_action = 'SELL' if qty > 0 else 'BUY'
+        close_qty = abs(qty)
+
+        response = place_order_with_freeze_check(
+            client=client,
+            user_id=current_user.id,
+            strategy="AlgoMirror_Reconcile",
+            symbol=symbol,
+            exchange=exchange,
+            action=close_action,
+            quantity=close_qty,
+            price_type='MARKET',
+            product=product
+        )
+
+        order_ok = response.get('status') == 'success'
+
+        # Verify the symbol is actually flat now (MARKET orders take a moment to fill).
+        #   remaining_qty == 0   -> verified flat
+        #   remaining_qty != 0   -> still open (close failed / not yet filled)
+        #   remaining_qty is None -> verification failed (never assume closed)
+        remaining_qty = 0
+        try:
+            time.sleep(2)
+            verify_response = client.positionbook()
+            if verify_response.get('status') == 'success':
+                for pos in verify_response.get('data', []):
+                    if pos.get('symbol') == symbol and pos.get('exchange') == exchange:
+                        remaining_qty = int(float(pos.get('quantity', '0')))
+                        break
+            else:
+                remaining_qty = None
+        except Exception:
+            remaining_qty = None
+
+        log_activity('close_orphan_position', {
+            'account_name': account.account_name,
+            'symbol': symbol,
+            'exchange': exchange,
+            'action': close_action,
+            'quantity': close_qty,
+            'product': product,
+            'split_order': response.get('split_order', False),
+            'order_status': response.get('status'),
+            'order_message': response.get('message', ''),
+            'remaining_qty': remaining_qty
+        }, account_id=account.id)
+
+        if remaining_qty == 0:
+            status = 'success'
+            message = f'{symbol} closed ({close_action} {close_qty}) on {account.account_name}'
+        elif remaining_qty is None:
+            status = 'warning'
+            message = (f'Square-off order sent for {symbol} on {account.account_name}, '
+                       f'but could not verify it is flat - check positions manually')
+        else:
+            status = 'warning'
+            message = (f'{symbol} still open ({remaining_qty}) at broker on {account.account_name} - '
+                       f'order may not have filled. {response.get("message", "")}'.strip())
+
+        return jsonify({
+            'status': status,
+            'message': message,
+            'account_id': account.id,
+            'symbol': symbol,
+            'exchange': exchange,
+            'action': close_action,
+            'quantity': close_qty,
+            'split_order': response.get('split_order', False),
+            'order_status': response.get('status'),
+            'remaining_qty': remaining_qty
+        })
+
+    except Exception as e:
+        current_app.logger.error(f'Failed to close orphan position {symbol} on account {account_id}: {str(e)}')
+        return jsonify({'status': 'error', 'message': f'Failed to close position: {str(e)}'}), 500
