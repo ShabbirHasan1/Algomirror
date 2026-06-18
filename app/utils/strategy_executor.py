@@ -555,14 +555,21 @@ class StrategyExecutor:
         # Mark leg as executed in the main session after all accounts complete
         # Check if at least one order succeeded or is pending (pending = order placed but not filled yet)
         successful_orders = [r for r in results if r.get('status') in ['success', 'pending']]
+        # NOTE: 'timeout' is deliberately NOT counted as failed - those orders have an
+        # indeterminate outcome (may already be live at the broker) and must NOT be retried.
         failed_orders = [r for r in results if r.get('status') in ['failed', 'error']]
         skipped_orders = [r for r in results if r.get('status') == 'skipped']
+        timeout_orders = [r for r in results if r.get('status') == 'timeout']
 
         logger.warning(f"[LEG {leg.leg_number} SUMMARY] Expected: {expected_orders} accounts | "
                       f"Success: {len(successful_orders)} | Failed: {len(failed_orders)} | Skipped: {len(skipped_orders)} | "
-                      f"Total results: {actual_results}")
+                      f"Timeout: {len(timeout_orders)} | Total results: {actual_results}")
         print(f"[LEG {leg.leg_number} SUMMARY] Expected: {expected_orders} | Success: {len(successful_orders)} | "
-              f"Failed: {len(failed_orders)} | Skipped: {len(skipped_orders)}")
+              f"Failed: {len(failed_orders)} | Skipped: {len(skipped_orders)} | Timeout: {len(timeout_orders)}")
+        if timeout_orders:
+            logger.warning(f"[LEG {leg.leg_number}] {len(timeout_orders)} account(s) had indeterminate (timeout/connection) "
+                          f"outcomes and were NOT retried to avoid duplicates - verify manually: "
+                          f"{[r.get('account') for r in timeout_orders]}")
 
         # CRITICAL: Check for missing orders (results < expected)
         if actual_results < expected_orders:
@@ -701,6 +708,30 @@ class StrategyExecutor:
                 )
                 db.session.add(failed_execution)
                 records_to_commit.append(failed_execution)
+
+            elif result.get('status') == 'timeout' and result.get('account_id'):
+                # Indeterminate outcome (request timed out / connection error). The order
+                # may or may not be live at the broker, so we did NOT retry it. Record it
+                # with a distinct 'unknown' status (no order_id) so it is visible for manual
+                # reconciliation. This status is intentionally not 'entered'/'pending', so
+                # the poller, position monitor, risk manager and exit logic all ignore it.
+                unknown_execution = StrategyExecution(
+                    strategy_id=self.strategy.id,
+                    account_id=result['account_id'],
+                    leg_id=result.get('leg_id', leg.id),
+                    order_id=None,
+                    symbol=result.get('symbol', ''),
+                    exchange=result.get('exchange', ''),
+                    quantity=result.get('quantity', 0),
+                    product=result.get('product', 'MIS'),
+                    status='unknown',
+                    broker_order_status='unknown',
+                    entry_time=result.get('entry_time', datetime.utcnow()),
+                    entry_price=None,
+                    error_message=result.get('error_message', result.get('error', ''))[:500]
+                )
+                db.session.add(unknown_execution)
+                records_to_commit.append(unknown_execution)
 
         # Single commit for StrategyExecution records only
         if records_to_commit:
@@ -877,9 +908,28 @@ class StrategyExecutor:
                     print(f"[THREAD SUCCESS] Leg {leg.leg_number}, account={account_name}: order_id={order_id}", flush=True)
 
                 else:
-                    # Order failed
+                    # Order not confirmed successful. Two very different cases:
+                    #  - INDETERMINATE (request timed out / connection error): the order
+                    #    may have actually reached the broker and filled. Retrying it would
+                    #    risk a DUPLICATE order. Mark 'timeout' so the leg-level retry SKIPS
+                    #    it (the retry only re-sends 'failed'/'error'). Safer to leave a
+                    #    possibly-placed order alone and reconcile manually.
+                    #  - REAL REJECTION (broker returned a definite error): order was not
+                    #    placed, so it is safe to retry. Mark 'failed' as before.
                     error_msg = response.get('message', 'Order placement failed')
-                    logger.error(f"[THREAD FAILED] Leg {leg.leg_number} failed on {account_name}: {error_msg}")
+                    error_type = response.get('error_type', '')
+                    indeterminate = error_type in ('timeout_error', 'connection_error')
+
+                    if indeterminate:
+                        result_status = 'timeout'
+                        logger.error(f"[THREAD TIMEOUT] Leg {leg.leg_number} on {account_name}: "
+                                     f"indeterminate outcome ({error_type}) - NOT retrying to avoid a "
+                                     f"duplicate order. Verify manually: {error_msg}")
+                        print(f"[THREAD TIMEOUT] Leg {leg.leg_number}, account={account_name}: "
+                              f"{error_type} - skipping retry to avoid duplicate", flush=True)
+                    else:
+                        result_status = 'failed'
+                        logger.error(f"[THREAD FAILED] Leg {leg.leg_number} failed on {account_name}: {error_msg}")
 
                     # NO DB WRITES HERE - batch commit in _execute_leg
                     results.append({
@@ -888,7 +938,7 @@ class StrategyExecutor:
                         'symbol': symbol,
                         'exchange': exchange,
                         'quantity': quantity,
-                        'status': 'failed',
+                        'status': result_status,
                         'error': error_msg,
                         'error_message': error_msg[:500],
                         'leg': leg.leg_number,
