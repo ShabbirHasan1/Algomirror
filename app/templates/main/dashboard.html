@@ -1085,34 +1085,13 @@ async function loadPositionReconciliation() {
                 const rows = a.orphans.map(p => {
                     const sym = escapeHtml(p.symbol);
                     const exch = escapeHtml(p.exchange);
-                    // Values go into data-* attributes (HTML-attribute escaped) and are
-                    // read back via dataset at click time - never interpolated into code,
-                    // so a quote in an account name cannot break the handler or inject JS.
-                    return `<div class="flex items-center gap-2 mt-1">
-                        <span>${sym} ${p.quantity} (${exch})</span>
-                        <button class="btn btn-xs btn-error orphan-close-btn"
-                            data-account-id="${a.account_id}"
-                            data-account-name="${escapeHtml(a.account_name)}"
-                            data-symbol="${sym}"
-                            data-exchange="${exch}">
-                            Close</button>
-                    </div>`;
+                    return `<div class="mt-1">${sym} ${p.quantity} (${exch})</div>`;
                 }).join('');
                 return `<div class="mt-2"><span class="font-semibold">${escapeHtml(a.account_name)}:</span>${rows}</div>`;
             }).join('');
-            const bodyEl = document.getElementById('reconcileWarningBody');
-            bodyEl.innerHTML =
+            document.getElementById('reconcileWarningBody').innerHTML =
                 `${data.orphan_count} position(s) open at the broker are not tracked by AlgoMirror. ` +
-                `Use Close All to square off every account at once, or close each one individually below.` + lines;
-            bodyEl.querySelectorAll('.orphan-close-btn').forEach(btn => {
-                btn.addEventListener('click', () => closeOrphanPosition(
-                    parseInt(btn.dataset.accountId, 10),
-                    btn.dataset.accountName,
-                    btn.dataset.symbol,
-                    btn.dataset.exchange,
-                    btn
-                ));
-            });
+                `Use Close All to square off every account at once.` + lines;
             warnEl.style.display = '';
         } else {
             warnEl.style.display = 'none';
@@ -1122,45 +1101,9 @@ async function loadPositionReconciliation() {
     }
 }
 
-// Square off a single untracked (orphan) position directly via AlgoMirror.
-// Freeze-quantity aware on the backend (uses splitorder above the freeze limit).
-async function closeOrphanPosition(accountId, accountName, symbol, exchange, btn) {
-    if (!confirm(`Close ${symbol} (${exchange}) on ${accountName}?\n\nThis places a MARKET square-off order at the broker.`)) {
-        return;
-    }
-    const original = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Closing...';
-    try {
-        const resp = await fetch('/accounts/close-orphan-position', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
-            },
-            body: JSON.stringify({ account_id: accountId, symbol: symbol, exchange: exchange }),
-            // Backend places the order, waits ~2s, then re-verifies via positionbook,
-            // so allow more than the 30s per-call broker timeout before giving up.
-            signal: AbortSignal.timeout(45000)
-        });
-        const data = await resp.json();
-        const type = data.status === 'success' ? 'success' : (data.status === 'warning' ? 'warning' : 'error');
-        showNotification(data.message || 'Close request completed', type);
-        // Refresh the banner so closed positions drop off (and remaining ones stay).
-        loadPositionReconciliation();
-    } catch (e) {
-        showNotification('Failed to send close request - check your connection and try again', 'error');
-        btn.disabled = false;
-        btn.textContent = original;
-    }
-}
-
 // Square off ALL untracked (orphan) positions across every account in one click.
 // Freeze-quantity aware on the backend (uses splitorder above the freeze limit).
 async function closeAllOrphans(btn) {
-    if (!confirm('Close ALL untracked positions across all accounts?\n\nThis places MARKET square-off orders at the broker for every position listed above.')) {
-        return;
-    }
     const original = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'Closing all...';
